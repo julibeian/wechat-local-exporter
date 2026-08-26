@@ -1,0 +1,15 @@
+/.tutor-filter/
+/tutor-filter-output/
+/outputs/
+.env
+.env.*
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+*.spec
+!packaging/WeChat-TXT-PDF-Exporter.spec
+/tmp/
+/output/

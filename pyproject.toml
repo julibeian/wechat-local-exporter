@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wechat-txt-pdf-exporter"
+version = "1.0.0"
+description = "Local-only Windows WeChat 4.x chat exporter for TXT and PDF"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+  "cryptography>=43",
+  "frida>=17.2; platform_system == 'Windows'",
+  "Pillow>=11",
+  "reportlab>=4.2",
+  "zstandard>=0.23",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3",
+  "pypdf>=5.0",
+  "pdfplumber>=0.11",
+  "pyinstaller>=6.11",
+]
+
+[project.scripts]
+wechat-exporter = "wechat_exporter.cli:main"
+wechat-exporter-gui = "wechat_exporter.gui:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
