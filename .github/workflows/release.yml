@@ -59,7 +59,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $version = (Select-String -Path pyproject.toml -Pattern '^version = "(.+)"$').Matches.Groups[1].Value
-          gh release create "${env:GITHUB_REF_NAME}" `
-            "dist/WeChat-TXT-PDF-Exporter-Installer-v$version.exe" `
-            --title "微信聊天导出工具 v$version" `
-            --notes-file RELEASE_NOTES.md
+          $tag = $env:GITHUB_REF_NAME
+          $asset = "dist/WeChat-TXT-PDF-Exporter-Installer-v$version.exe"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $asset --clobber
+            gh release edit $tag --title "微信聊天导出工具 v$version" --notes-file RELEASE_NOTES.md
+          } else {
+            gh release create $tag $asset --title "微信聊天导出工具 v$version" --notes-file RELEASE_NOTES.md
+          }
