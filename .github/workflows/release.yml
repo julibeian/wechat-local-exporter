@@ -34,7 +34,7 @@ jobs:
         run: |
           $version = (Select-String -Path pyproject.toml -Pattern '^version = "(.+)"$').Matches.Groups[1].Value
           $exe = Join-Path $PWD "dist/WeChat-TXT-PDF-Exporter-v$version.exe"
-          $process = Start-Process -FilePath $exe -ArgumentList @('--self-test', (Join-Path $PWD 'tmp/package-self-test')) -Wait -PassThru -WindowStyle Hidden
+          $process = Start-Process -FilePath $exe -ArgumentList @('--self-test-offline', (Join-Path $PWD 'tmp/package-self-test')) -Wait -PassThru -WindowStyle Hidden
           if ($process.ExitCode -ne 0) { exit $process.ExitCode }
 
       - name: Install Inno Setup
