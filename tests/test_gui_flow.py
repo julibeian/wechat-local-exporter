@@ -4,8 +4,14 @@ import os
 from datetime import date, datetime
 from pathlib import Path
 
-from wechat_exporter.models import AccountLocation
-from wechat_exporter.gui import _date_range_timestamps, _format_date_range
+from wechat_exporter.models import AccountLocation, Conversation
+from wechat_exporter.gui import (
+    ExporterApp,
+    STAR_PROMPT_DELAY_SECONDS,
+    _conversation_matches_filters,
+    _date_range_timestamps,
+    _format_date_range,
+)
 from wechat_exporter.windows import select_current_account
 
 
@@ -36,3 +42,50 @@ def test_date_range_uses_full_local_days() -> None:
     assert datetime.fromtimestamp(end).strftime("%Y-%m-%d %H:%M:%S") == "2026-08-23 23:59:59"
     assert _format_date_range(None, None) == "全部日期"
     assert _format_date_range(date(2026, 8, 1), None) == "2026-08-01  至  不限"
+
+
+def test_conversation_type_dropdown_filters_categories_and_search() -> None:
+    contact = Conversation("wxid_friend", "朋友", summary="周末见")
+    group = Conversation("study@chatroom", "学习群", summary="作业", is_group=True)
+
+    assert _conversation_matches_filters(
+        contact, query="朋友", type_filter="contact"
+    )
+    assert not _conversation_matches_filters(
+        group, query="", type_filter="contact"
+    )
+    assert _conversation_matches_filters(
+        group, query="作业", type_filter="group"
+    )
+    assert not _conversation_matches_filters(
+        contact, query="", type_filter="group"
+    )
+    assert _conversation_matches_filters(contact, query="", type_filter="all")
+    assert _conversation_matches_filters(group, query="", type_filter="all")
+
+
+class _AfterRoot:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, object]] = []
+        self.cancelled: list[str] = []
+
+    def after(self, delay_ms: int, callback) -> str:
+        self.calls.append((delay_ms, callback))
+        return f"after-{len(self.calls)}"
+
+    def after_cancel(self, after_id: str) -> None:
+        self.cancelled.append(after_id)
+
+
+def test_star_timer_starts_as_full_delay_after_connection() -> None:
+    app = object.__new__(ExporterApp)
+    app.root = _AfterRoot()
+    app._star_prompt_shown = False
+    app._star_prompt_after_id = None
+
+    app._schedule_star_prompt_after_connection()
+    assert app.root.calls[0][0] == int(STAR_PROMPT_DELAY_SECONDS * 1000)
+
+    app._schedule_star_prompt_after_connection()
+    assert app.root.cancelled == ["after-1"]
+    assert app.root.calls[1][0] == 60_000

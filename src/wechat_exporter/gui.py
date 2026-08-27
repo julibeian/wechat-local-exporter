@@ -29,7 +29,13 @@ from .windows import (
 )
 
 
-STAR_PROMPT_DELAY_SECONDS = 30.0
+STAR_PROMPT_DELAY_SECONDS = 60.0
+VOICE_TEXT_GUIDE_STEPS = (
+    "在微信中打开含语音消息的聊天。",
+    "电脑版：右键语音气泡，选择“转文字”；手机端：长按语音气泡，选择“转文字”。",
+    "等待文字完整显示在语音气泡下方。不要在转写仍进行时立即关闭微信。",
+    "回到本工具连接微信，再导出 TXT 或 PDF；两种格式都会默认写入微信已有转写。",
+)
 
 
 def _enable_windows_high_dpi() -> None:
@@ -226,8 +232,8 @@ class ExportHistoryDialog(tk.Toplevel):
     def __init__(self, parent: tk.Misc):
         super().__init__(parent)
         self.title("导出历史")
-        self.geometry("1080x520")
-        self.minsize(820, 380)
+        self.geometry("1180x640")
+        self.minsize(960, 500)
         self.transient(parent)
         self.entries: list[ExportHistoryEntry] = []
 
@@ -362,6 +368,180 @@ class ExportHistoryDialog(tk.Toplevel):
             messagebox.showerror(f"无法打开{kind}", str(error), parent=self)
 
 
+class _VoiceGuideIllustration(tk.Canvas):
+    """Privacy-safe WeChat operation diagram rendered as a screenshot card."""
+
+    def __init__(self, parent: tk.Misc, *, mobile: bool):
+        super().__init__(
+            parent,
+            width=350,
+            height=220,
+            background="#F5F7FA",
+            highlightbackground="#CBD5E1",
+            highlightthickness=1,
+        )
+        self._mobile = mobile
+        self._draw()
+
+    def _draw(self) -> None:
+        title = "手机微信（界面示意）" if self._mobile else "电脑微信（界面示意）"
+        action = "长按语音" if self._mobile else "右键语音"
+        self.create_text(
+            16,
+            16,
+            anchor="nw",
+            text=title,
+            fill="#172033",
+            font=("Microsoft YaHei UI", 10, "bold"),
+        )
+        self.create_rectangle(16, 43, 334, 201, fill="#FFFFFF", outline="#D8DEE8")
+        self.create_oval(34, 63, 66, 95, fill="#DCE5F2", outline="")
+        self.create_text(50, 79, text="友", fill="#526078", font=("Microsoft YaHei UI", 9, "bold"))
+        self.create_rectangle(80, 62, 220, 101, fill="#95EC69", outline="#78CF52")
+        self.create_text(150, 81, text=")))  0:12", fill="#1F2937", font=("Microsoft YaHei UI", 10))
+        self.create_text(
+            80,
+            112,
+            anchor="nw",
+            text=f"① {action}",
+            fill="#C2410C",
+            font=("Microsoft YaHei UI", 9, "bold"),
+        )
+        self.create_line(223, 81, 255, 81, fill="#EA580C", width=2, arrow=tk.LAST)
+        self.create_rectangle(256, 56, 321, 118, fill="#FFFFFF", outline="#AAB4C3")
+        self.create_text(288, 75, text="复制", fill="#64748B", font=("Microsoft YaHei UI", 8))
+        self.create_rectangle(259, 88, 318, 111, fill="#E8F5E3", outline="")
+        self.create_text(288, 99, text="转文字", fill="#16803C", font=("Microsoft YaHei UI", 9, "bold"))
+        self.create_text(
+            80,
+            145,
+            anchor="nw",
+            text="② 点击“转文字”  →  ③ 等待文字显示 ✓",
+            fill="#2457A7",
+            font=("Microsoft YaHei UI", 9, "bold"),
+        )
+        self.create_text(
+            80,
+            174,
+            anchor="nw",
+            text="文字出现后，再连接本工具并导出",
+            fill="#526078",
+            font=("Microsoft YaHei UI", 8),
+        )
+
+
+class VoiceTextGuideDialog(tk.Toplevel):
+    def __init__(self, parent: tk.Misc):
+        super().__init__(parent)
+        self.title("语音转文字 · 详细说明")
+        self.geometry("940x760")
+        self.minsize(760, 620)
+        self.transient(parent)
+
+        canvas = tk.Canvas(self, background="#FFFFFF", highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        content = ttk.Frame(canvas, padding=20)
+        window_id = canvas.create_window((0, 0), window=content, anchor="nw")
+        content.bind(
+            "<Configure>",
+            lambda _event: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+        canvas.bind(
+            "<Configure>",
+            lambda event: canvas.itemconfigure(window_id, width=event.width),
+        )
+
+        ttk.Label(
+            content,
+            text="语音转文字怎么导出？",
+            font=("Microsoft YaHei UI", 16, "bold"),
+        ).pack(anchor="w")
+        ttk.Label(
+            content,
+            text="TXT 和 PDF 默认都会使用微信已经生成的转写文字，无需在本工具里额外勾选。",
+            foreground="#526078",
+            wraplength=850,
+        ).pack(anchor="w", pady=(4, 14))
+
+        notice = tk.Frame(
+            content,
+            background="#FFF7E8",
+            highlightbackground="#F2C879",
+            highlightthickness=1,
+            padx=13,
+            pady=10,
+        )
+        notice.pack(fill="x")
+        tk.Label(
+            notice,
+            text="！ 这不是语音识别功能",
+            background="#FFF7E8",
+            foreground="#9A5A00",
+            font=("Microsoft YaHei UI", 10, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            notice,
+            text="本工具不会上传音频，也不会自行识别语音；它只读取微信已生成并保存在聊天记录里的文字。当前电脑版微信没有单独的语音转文字总开关。",
+            background="#FFF7E8",
+            foreground="#6F4A15",
+            justify="left",
+            wraplength=830,
+        ).pack(anchor="w", pady=(3, 0))
+
+        ttk.Label(
+            content,
+            text="按下面 4 步操作",
+            font=("Microsoft YaHei UI", 12, "bold"),
+        ).pack(anchor="w", pady=(18, 8))
+        for index, step in enumerate(VOICE_TEXT_GUIDE_STEPS, start=1):
+            row = ttk.Frame(content)
+            row.pack(fill="x", pady=4)
+            tk.Label(
+                row,
+                text=str(index),
+                width=2,
+                background="#2457A7",
+                foreground="#FFFFFF",
+                font=("Microsoft YaHei UI", 9, "bold"),
+            ).pack(side="left", anchor="n", padx=(0, 9))
+            ttk.Label(row, text=step, wraplength=800, justify="left").pack(
+                side="left", fill="x", expand=True
+            )
+
+        ttk.Label(
+            content,
+            text="截图与符号引导",
+            font=("Microsoft YaHei UI", 12, "bold"),
+        ).pack(anchor="w", pady=(18, 8))
+        diagrams = ttk.Frame(content)
+        diagrams.pack(fill="x")
+        _VoiceGuideIllustration(diagrams, mobile=False).pack(
+            side="left", fill="x", expand=True, padx=(0, 8)
+        )
+        _VoiceGuideIllustration(diagrams, mobile=True).pack(
+            side="left", fill="x", expand=True, padx=(8, 0)
+        )
+
+        ttk.Label(
+            content,
+            text="✓ 判断是否成功：微信语音气泡下方已经出现可阅读文字。若导出结果显示“微信尚未生成转文字”，请回到微信完成上述操作后重新连接并导出。",
+            foreground="#16803C",
+            wraplength=850,
+            justify="left",
+        ).pack(anchor="w", pady=(16, 12))
+        ttk.Button(content, text="我知道了", command=self.destroy).pack(anchor="e")
+
+        self.bind("<Escape>", lambda _event: self.destroy())
+        self.update_idletasks()
+        x = parent.winfo_rootx() + max(0, (parent.winfo_width() - self.winfo_width()) // 2)
+        y = parent.winfo_rooty() + max(0, (parent.winfo_height() - self.winfo_height()) // 2)
+        self.geometry(f"+{x}+{y}")
+        self.focus_force()
+
+
 class StarPrompt(tk.Toplevel):
     """Small, dismissible GitHub prompt shown at most once per app run."""
 
@@ -376,18 +556,18 @@ class StarPrompt(tk.Toplevel):
             background="#FFFFFF",
             highlightbackground="#B8C6DB",
             highlightthickness=1,
-            padx=14,
-            pady=11,
+            padx=11,
+            pady=8,
         )
         card.pack(fill="both", expand=True)
         header = tk.Frame(card, background="#FFFFFF")
         header.pack(fill="x")
         tk.Label(
             header,
-            text="用得还顺手吗？",
+            text="喜欢这个工具？",
             background="#FFFFFF",
             foreground="#172033",
-            font=("Microsoft YaHei UI", 10, "bold"),
+            font=("Microsoft YaHei UI", 9, "bold"),
         ).pack(side="left")
         tk.Button(
             header,
@@ -403,11 +583,11 @@ class StarPrompt(tk.Toplevel):
         ).pack(side="right")
         tk.Label(
             card,
-            text="如果它帮到了你，欢迎点亮 Star；暂时不需要也可以忽略。",
+            text="好用的话，欢迎点亮 Star 支持一下。",
             background="#FFFFFF",
             foreground="#526078",
-            font=("Microsoft YaHei UI", 9),
-        ).pack(anchor="w", pady=(7, 9))
+            font=("Microsoft YaHei UI", 8),
+        ).pack(anchor="w", pady=(4, 6))
         actions = tk.Frame(card, background="#FFFFFF")
         actions.pack(fill="x")
         tk.Button(
@@ -415,13 +595,13 @@ class StarPrompt(tk.Toplevel):
             text="⭐ 点亮 Star",
             command=self._open_project,
             relief="flat",
-            padx=12,
-            pady=6,
+            padx=9,
+            pady=4,
             background="#2457A7",
             activebackground="#1D4789",
             foreground="#FFFFFF",
             activeforeground="#FFFFFF",
-            font=("Microsoft YaHei UI", 9, "bold"),
+            font=("Microsoft YaHei UI", 8, "bold"),
             cursor="hand2",
         ).pack(side="left")
         tk.Button(
@@ -429,13 +609,13 @@ class StarPrompt(tk.Toplevel):
             text="忽略",
             command=self.destroy,
             relief="flat",
-            padx=12,
-            pady=6,
+            padx=9,
+            pady=4,
             background="#EEF2F7",
             activebackground="#E2E8F0",
             foreground="#526078",
             activeforeground="#172033",
-            font=("Microsoft YaHei UI", 9),
+            font=("Microsoft YaHei UI", 8),
             cursor="hand2",
         ).pack(side="left", padx=(8, 0))
         self.bind("<Escape>", lambda _event: self.destroy())
@@ -443,10 +623,25 @@ class StarPrompt(tk.Toplevel):
         self.update_idletasks()
         width = self.winfo_width()
         height = self.winfo_height()
-        x = max(12, self.winfo_screenwidth() - width - 22)
-        y = max(12, self.winfo_screenheight() - height - 76)
-        self.geometry(f"+{x}+{y}")
+        self._target_x = max(12, self.winfo_screenwidth() - width - 18)
+        self._target_y = max(12, self.winfo_screenheight() - height - 72)
+        self._start_x = self.winfo_screenwidth() + 6
+        self._animation_step = 0
+        self.geometry(f"+{self._start_x}+{self._target_y}")
+        self.after(10, self._animate_in)
         self.after(2500, self._release_topmost)
+
+    def _animate_in(self) -> None:
+        if not self.winfo_exists():
+            return
+        frames = 16
+        self._animation_step += 1
+        progress = min(1.0, self._animation_step / frames)
+        eased = 1.0 - (1.0 - progress) ** 3
+        x = round(self._start_x + (self._target_x - self._start_x) * eased)
+        self.geometry(f"+{x}+{self._target_y}")
+        if progress < 1.0:
+            self.after(16, self._animate_in)
 
     def _release_topmost(self) -> None:
         if self.winfo_exists():
@@ -461,8 +656,8 @@ class ExporterApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title(f"微信聊天 TXT / PDF 本地导出 v{__version__}")
-        self.root.geometry("1000x760")
-        self.root.minsize(860, 660)
+        self.root.geometry("1060x900")
+        self.root.minsize(900, 800)
         self.service: ExporterService | None = None
         self.account: AccountLocation | None = None
         self.wechat_executable: Path | None = None
@@ -478,11 +673,12 @@ class ExporterApp:
         ] = {}
         self._export_started_at: float | None = None
         self._latest_export_status = ""
-        self._app_started_at = clock.perf_counter()
         self._star_prompt_shown = False
+        self._star_prompt_after_id: str | None = None
 
         self.account_var = tk.StringVar(value="正在自动识别当前微信账号...")
         self.search_var = tk.StringVar()
+        self.conversation_type_var = tk.StringVar(value="all")
         self.output_var = tk.StringVar(value=str(Path.home() / "Desktop" / "微信聊天导出"))
         self.start_var = tk.StringVar()
         self.end_var = tk.StringVar()
@@ -490,20 +686,23 @@ class ExporterApp:
         self.txt_var = tk.BooleanVar(value=True)
         self.pdf_var = tk.BooleanVar(value=True)
         self.pdf_images_var = tk.BooleanVar(value=False)
-        self.voice_text_var = tk.BooleanVar(value=True)
         self.estimate_var = tk.StringVar(value="选择会话后自动估算")
         self.status_var = tk.StringVar(value="准备就绪")
         self.version_var = tk.StringVar(value="微信版本：检测中...")
 
         self._build_ui()
         self.search_var.trace_add("write", lambda *_: self._filter_conversations())
+        self.conversation_type_var.trace_add(
+            "write", lambda *_: self._type_filter_changed()
+        )
         for variable in (
             self.txt_var,
             self.pdf_var,
             self.pdf_images_var,
-            self.voice_text_var,
         ):
             variable.trace_add("write", lambda *_: self._schedule_estimate())
+        self.pdf_var.trace_add("write", lambda *_: self._sync_pdf_mode_state())
+        self._sync_pdf_mode_state()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(100, self._poll_events)
         self._run_worker("detect", self._detect)
@@ -552,6 +751,7 @@ class ExporterApp:
         ).grid(row=3, column=1, sticky="w", pady=(5, 0))
 
         middle = ttk.Panedwindow(outer, orient="vertical")
+        self.middle = middle
         middle.pack(fill="both", expand=True, pady=12)
         sessions_frame = ttk.LabelFrame(middle, text="2. 选择联系人或群聊", padding=8)
         middle.add(sessions_frame, weight=4)
@@ -561,11 +761,22 @@ class ExporterApp:
         search_row.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         ttk.Label(search_row, text="搜索").pack(side="left")
         ttk.Entry(search_row, textvariable=self.search_var, width=36).pack(side="left", padx=8)
+        ttk.Label(
+            search_row,
+            text="点击表头“类型 ▾”筛选联系人或群聊",
+            foreground="#6A7280",
+        ).pack(side="left", padx=(8, 0))
         ttk.Label(search_row, text="可按 Ctrl / Shift 多选").pack(side="right")
 
         columns = ("type", "name", "last", "summary")
-        self.tree = ttk.Treeview(sessions_frame, columns=columns, show="headings", selectmode="extended")
-        self.tree.heading("type", text="类型")
+        self.tree = ttk.Treeview(
+            sessions_frame,
+            columns=columns,
+            show="headings",
+            selectmode="extended",
+            height=5,
+        )
+        self.tree.heading("type", text="类型 ▾")
         self.tree.heading("name", text="会话")
         self.tree.heading("last", text="最后时间")
         self.tree.heading("summary", text="最近消息")
@@ -581,9 +792,21 @@ class ExporterApp:
             "<<TreeviewSelect>>",
             lambda _event: self._schedule_estimate(),
         )
+        self.tree.bind("<Button-1>", self._tree_heading_clicked, add="+")
+        self.type_filter_menu = tk.Menu(self.root, tearoff=False)
+        for value, label in (
+            ("all", "✓  全部类型"),
+            ("contact", "联系人"),
+            ("group", "群聊"),
+        ):
+            self.type_filter_menu.add_radiobutton(
+                label=label,
+                value=value,
+                variable=self.conversation_type_var,
+            )
 
         export = ttk.LabelFrame(middle, text="3. 导出", padding=10)
-        middle.add(export, weight=1)
+        middle.add(export, weight=2)
         export.columnconfigure(1, weight=1)
         ttk.Label(export, text="日期范围").grid(row=0, column=0, sticky="w")
         date_row = ttk.Frame(export)
@@ -594,21 +817,31 @@ class ExporterApp:
         ttk.Label(export, text="输出目录").grid(row=1, column=0, sticky="w", pady=7)
         ttk.Entry(export, textvariable=self.output_var).grid(row=1, column=1, sticky="ew", padx=(0, 8), pady=7)
         ttk.Button(export, text="选择...", command=self._browse_output).grid(row=1, column=2, pady=7)
-        ttk.Button(export, text="导出历史", command=self._show_history).grid(
-            row=1, column=3, padx=(8, 0), pady=7
-        )
         ttk.Label(export, text="格式").grid(row=2, column=0, sticky="w")
         format_row = ttk.Frame(export)
-        format_row.grid(row=2, column=1, sticky="w")
+        format_row.grid(row=2, column=1, columnspan=2, sticky="w")
         ttk.Checkbutton(format_row, text="TXT", variable=self.txt_var).pack(side="left")
         ttk.Checkbutton(format_row, text="PDF", variable=self.pdf_var).pack(side="left", padx=14)
-        ttk.Checkbutton(
+        ttk.Label(
             format_row,
-            text="使用微信已有语音转文字（快速）",
-            variable=self.voice_text_var,
-        ).pack(side="left")
-        self.export_button = ttk.Button(export, text="导出选中会话", command=self._export_clicked, state="disabled")
-        self.export_button.grid(row=2, column=2)
+            text="语音转文字：TXT / PDF 默认写入微信已有转写",
+            foreground="#7A8494",
+        ).pack(side="left", padx=(2, 0))
+        tk.Button(
+            format_row,
+            text="详细 ›",
+            command=self._show_voice_text_guide,
+            relief="flat",
+            borderwidth=0,
+            background="#F0F0F0",
+            activebackground="#E5EAF2",
+            foreground="#2457A7",
+            activeforeground="#173E78",
+            font=("Microsoft YaHei UI", 9, "underline"),
+            cursor="hand2",
+            padx=4,
+            pady=1,
+        ).pack(side="left", padx=(4, 0))
         ttk.Label(export, text="预计耗时").grid(
             row=3, column=0, sticky="w", pady=(7, 0)
         )
@@ -618,22 +851,83 @@ class ExporterApp:
             foreground="#2457A7",
             font=("Microsoft YaHei UI", 9, "bold"),
         ).grid(row=3, column=1, columnspan=2, sticky="w", pady=(7, 0))
-        ttk.Checkbutton(
-            export,
-            text="PDF 嵌入图片/表情（完整模式，较慢）",
+        ttk.Label(export, text="导出模式").grid(row=4, column=0, sticky="w", pady=(7, 0))
+        mode_row = ttk.Frame(export)
+        mode_row.grid(row=4, column=1, columnspan=2, sticky="w", pady=(5, 0))
+        self.quick_mode_button = ttk.Radiobutton(
+            mode_row,
+            text="快速（默认）",
             variable=self.pdf_images_var,
-        ).grid(row=4, column=1, sticky="w", pady=(4, 0))
+            value=False,
+        )
+        self.quick_mode_button.pack(side="left")
+        self.full_mode_button = ttk.Radiobutton(
+            mode_row,
+            text="完整（手动选择）",
+            variable=self.pdf_images_var,
+            value=True,
+        )
+        self.full_mode_button.pack(side="left", padx=(16, 0))
         ttk.Label(
             export,
-            text="默认快速 PDF 不读取图片；完整模式并行读取原图并补全表情；TXT 始终使用占位符。",
+            text="快速：优先速度，PDF 图片/表情用可搜索占位文字；完整：PDF 额外读取原图和表情，耗时更长。TXT 内容不受模式影响。",
             foreground="#6A7280",
         ).grid(row=5, column=1, columnspan=2, sticky="w", pady=(3, 0))
+
+        ttk.Separator(export, orient="horizontal").grid(
+            row=6, column=0, columnspan=4, sticky="ew", pady=(11, 9)
+        )
+        actions = ttk.Frame(export)
+        actions.grid(row=7, column=0, columnspan=4, sticky="ew")
+        self.history_button = tk.Button(
+            actions,
+            text="◷  导出历史",
+            command=self._show_history,
+            background="#E8EEF8",
+            activebackground="#D8E3F4",
+            foreground="#234B82",
+            activeforeground="#173E78",
+            relief="flat",
+            borderwidth=0,
+            font=("Microsoft YaHei UI", 10, "bold"),
+            padx=17,
+            pady=8,
+            cursor="hand2",
+        )
+        self.history_button.pack(side="left")
+        self.export_button = tk.Button(
+            actions,
+            text="⇩  导出选中会话",
+            command=self._export_clicked,
+            state="disabled",
+            disabledforeground="#9AA3B2",
+            background="#F0F0F0",
+            activebackground="#E5EAF2",
+            foreground="#2457A7",
+            activeforeground="#173E78",
+            relief="groove",
+            borderwidth=1,
+            font=("Microsoft YaHei UI", 12, "bold"),
+            padx=22,
+            pady=9,
+            cursor="hand2",
+        )
+        self.export_button.pack(side="right")
 
         status_row = ttk.Frame(outer)
         status_row.pack(fill="x")
         self.progress = ttk.Progressbar(status_row, maximum=100, mode="determinate")
         self.progress.pack(side="left", fill="x", expand=True)
         ttk.Label(status_row, textvariable=self.status_var, width=62).pack(side="left", padx=(10, 0))
+        self.root.after_idle(self._set_initial_sash)
+
+    def _set_initial_sash(self) -> None:
+        try:
+            available = self.middle.winfo_height()
+            session_height = max(180, min(225, int(available * 0.40)))
+            self.middle.sashpos(0, session_height)
+        except tk.TclError:
+            pass
 
     def _browse_output(self) -> None:
         selected = filedialog.askdirectory(title="选择导出目录")
@@ -643,7 +937,32 @@ class ExporterApp:
     def _show_history(self) -> None:
         ExportHistoryDialog(self.root)
 
+    def _show_voice_text_guide(self) -> None:
+        VoiceTextGuideDialog(self.root)
+
+    def _sync_pdf_mode_state(self) -> None:
+        enabled = self.pdf_var.get()
+        if not enabled:
+            self.pdf_images_var.set(False)
+        state = "normal" if enabled else "disabled"
+        self.quick_mode_button.configure(state=state)
+        self.full_mode_button.configure(state=state)
+
+    def _schedule_star_prompt_after_connection(self) -> None:
+        if self._star_prompt_shown:
+            return
+        if self._star_prompt_after_id is not None:
+            try:
+                self.root.after_cancel(self._star_prompt_after_id)
+            except tk.TclError:
+                pass
+        self._star_prompt_after_id = self.root.after(
+            int(STAR_PROMPT_DELAY_SECONDS * 1000),
+            self._show_star_prompt,
+        )
+
     def _show_star_prompt(self) -> None:
+        self._star_prompt_after_id = None
         if self._star_prompt_shown or not self.root.winfo_exists():
             return
         self._star_prompt_shown = True
@@ -732,15 +1051,37 @@ class ExporterApp:
         )
         return archive.conversations()
 
+    def _type_filter_changed(self) -> None:
+        heading = {
+            "all": "类型 ▾",
+            "contact": "类型：联系人 ▾",
+            "group": "类型：群聊 ▾",
+        }.get(self.conversation_type_var.get(), "类型 ▾")
+        self.tree.heading("type", text=heading)
+        self._filter_conversations()
+
+    def _tree_heading_clicked(self, event: tk.Event) -> str | None:
+        if (
+            self.tree.identify_region(event.x, event.y) == "heading"
+            and self.tree.identify_column(event.x) == "#1"
+        ):
+            try:
+                self.type_filter_menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                self.type_filter_menu.grab_release()
+            return "break"
+        return None
+
     def _filter_conversations(self) -> None:
         query = self.search_var.get().strip().lower()
         self.visible_conversations = [
             item
             for item in self.conversations
-            if not query
-            or query in item.display_name.lower()
-            or query in item.username.lower()
-            or query in item.summary.lower()
+            if _conversation_matches_filters(
+                item,
+                query=query,
+                type_filter=self.conversation_type_var.get(),
+            )
         ]
         for item in self.tree.get_children():
             self.tree.delete(item)
@@ -901,7 +1242,7 @@ class ExporterApp:
             include_txt=self.txt_var.get(),
             include_pdf=self.pdf_var.get(),
             include_pdf_images=self.pdf_images_var.get(),
-            include_wechat_voice_text=self.voice_text_var.get(),
+            include_wechat_voice_text=True,
             start_timestamp=start,
             end_timestamp=end,
         )
@@ -999,11 +1340,7 @@ class ExporterApp:
                     self.status_var.set(
                         f"已读取 {len(self.conversations)} 个联系人/群聊（已隐藏公众号）"
                     )
-                    elapsed = clock.perf_counter() - self._app_started_at
-                    delay_ms = int(
-                        max(1.5, STAR_PROMPT_DELAY_SECONDS - elapsed) * 1000
-                    )
-                    self.root.after(delay_ms, self._show_star_prompt)
+                    self._schedule_star_prompt_after_connection()
                     self._focus_window()
                 elif kind == "export:ok":
                     result = payload
@@ -1058,9 +1395,32 @@ class ExporterApp:
         self.root.focus_force()
 
     def _on_close(self) -> None:
+        if self._star_prompt_after_id is not None:
+            try:
+                self.root.after_cancel(self._star_prompt_after_id)
+            except tk.TclError:
+                pass
         if self.service:
             self.service.close()
         self.root.destroy()
+
+
+def _conversation_matches_filters(
+    conversation: Conversation,
+    *,
+    query: str,
+    type_filter: str,
+) -> bool:
+    if type_filter == "contact" and conversation.is_group:
+        return False
+    if type_filter == "group" and not conversation.is_group:
+        return False
+    return (
+        not query
+        or query in conversation.display_name.lower()
+        or query in conversation.username.lower()
+        or query in conversation.summary.lower()
+    )
 
 
 def _calibration_prompt(sample: CalibrationSample) -> str:
