@@ -70,6 +70,7 @@ def collect_required_databases(db_dir: Path) -> list[DatabaseTarget]:
     candidates = [
         db_dir / "contact" / "contact.db",
         db_dir / "session" / "session.db",
+        db_dir / "sns" / "sns.db",
     ]
     message_dir = db_dir / "message"
     if message_dir.is_dir():
@@ -170,7 +171,7 @@ def extract_database_keys(
     """
     target_list = list(targets)
     if not target_list:
-        raise FileNotFoundError("没有找到 contact/session/message 数据库")
+        raise FileNotFoundError("没有找到 contact/session/message/sns 数据库")
     by_salt: dict[bytes, list[DatabaseTarget]] = {}
     for target in target_list:
         by_salt.setdefault(target.salt, []).append(target)

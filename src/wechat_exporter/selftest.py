@@ -11,7 +11,15 @@ from PIL import Image
 from .content import decode_database_content, parse_message_text
 from .exporters import PdfTranscriptWriter, TxtTranscriptWriter
 from .integrity import verify_signature
-from .models import Conversation, Message, PdfImage
+from .models import (
+    Conversation,
+    Message,
+    Moment,
+    MomentMedia,
+    MomentMediaFile,
+    PdfImage,
+)
+from .moments_archive import MomentsArchiveWriter
 from .windows import discover_accounts, find_weixin_executable, select_current_account
 
 
@@ -105,6 +113,27 @@ def run_packaged_self_test(
             )
         pdf_count = writer.count
 
+    moments_path = output_dir / "packaged-self-test-moments"
+    moment_media = MomentMedia(md5="0" * 32)
+    moment = Moment(
+        post_id="selftest-moment",
+        username=conversation.username,
+        timestamp=int(datetime(2026, 8, 23, 10, 0, 0).timestamp()),
+        content="朋友圈离线归档打包自检，不访问真实微信数据。",
+        media=(moment_media,),
+        is_pinned=True,
+    )
+    archive_media = MomentMediaFile(
+        data=synthetic_image.data,
+        extension="png",
+        mime_type="image/png",
+        source="内置合成图片",
+    )
+    moments_writer = MomentsArchiveWriter(moments_path, conversation)
+    moments_writer.write(moment, ((moment_media, archive_media),))
+    moments_html, moments_json, moments_manifest = moments_writer.finish()
+    moments_count = len(moments_writer.posts)
+
     receipt_path = output_dir / "self-test-result.json"
     receipt_path.write_text(
         json.dumps(
@@ -116,9 +145,14 @@ def run_packaged_self_test(
                 "zstd": "ok",
                 "wechat_voice_text": "ok",
                 "pdf_image": "ok",
+                "moments_archive": "ok",
+                "moments_count": moments_count,
                 "auto_discovery": environment_status,
                 "txt": txt_path.name,
                 "pdf": pdf_path.name,
+                "moments": moments_html.relative_to(output_dir).as_posix(),
+                "moments_json": moments_json.relative_to(output_dir).as_posix(),
+                "moments_manifest": moments_manifest.relative_to(output_dir).as_posix(),
             },
             ensure_ascii=False,
             indent=2,

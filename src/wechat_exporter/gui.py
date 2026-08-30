@@ -673,6 +673,7 @@ class ExporterApp:
         ] = {}
         self._export_started_at: float | None = None
         self._latest_export_status = ""
+        self._worker_active = False
         self._star_prompt_shown = False
         self._star_prompt_after_id: str | None = None
 
@@ -790,7 +791,7 @@ class ExporterApp:
         scrollbar.grid(row=1, column=1, sticky="ns")
         self.tree.bind(
             "<<TreeviewSelect>>",
-            lambda _event: self._schedule_estimate(),
+            lambda _event: self._selection_changed(),
         )
         self.tree.bind("<Button-1>", self._tree_heading_clicked, add="+")
         self.type_filter_menu = tk.Menu(self.root, tearoff=False)
@@ -870,8 +871,10 @@ class ExporterApp:
         self.full_mode_button.pack(side="left", padx=(16, 0))
         ttk.Label(
             export,
-            text="快速：优先速度，PDF 图片/表情用可搜索占位文字；完整：PDF 额外读取原图和表情，耗时更长。TXT 内容不受模式影响。",
+            text="快速/完整只影响聊天 PDF。朋友圈另存为离线 HTML + JSON + 原始照片/视频，不受聊天日期和模式影响。",
             foreground="#6A7280",
+            wraplength=790,
+            justify="left",
         ).grid(row=5, column=1, columnspan=2, sticky="w", pady=(3, 0))
 
         ttk.Separator(export, orient="horizontal").grid(
@@ -913,6 +916,24 @@ class ExporterApp:
             cursor="hand2",
         )
         self.export_button.pack(side="right")
+        self.moments_button = tk.Button(
+            actions,
+            text="▣  导出该人朋友圈归档",
+            command=self._export_moments_clicked,
+            state="disabled",
+            disabledforeground="#9AA3B2",
+            background="#E8F4EE",
+            activebackground="#D8EADF",
+            foreground="#1C6B48",
+            activeforeground="#14523A",
+            relief="groove",
+            borderwidth=1,
+            font=("Microsoft YaHei UI", 10, "bold"),
+            padx=16,
+            pady=9,
+            cursor="hand2",
+        )
+        self.moments_button.pack(side="right", padx=(0, 10))
 
         status_row = ttk.Frame(outer)
         status_row.pack(fill="x")
@@ -947,6 +968,25 @@ class ExporterApp:
         state = "normal" if enabled else "disabled"
         self.quick_mode_button.configure(state=state)
         self.full_mode_button.configure(state=state)
+        self._sync_moments_button_state()
+
+    def _selection_changed(self) -> None:
+        self._schedule_estimate()
+        self._sync_moments_button_state()
+
+    def _sync_moments_button_state(self) -> None:
+        if not hasattr(self, "moments_button"):
+            return
+        conversations = self._selected_conversations()
+        eligible, _reason = _moments_export_eligibility(conversations)
+        connected = bool(self.service and self.service.archive)
+        self.moments_button.configure(
+            state=(
+                "normal"
+                if eligible and connected and not self._worker_active
+                else "disabled"
+            )
+        )
 
     def _schedule_star_prompt_after_connection(self) -> None:
         if self._star_prompt_shown:
@@ -982,8 +1022,12 @@ class ExporterApp:
         self._schedule_estimate()
 
     def _run_worker(self, name: str, func) -> None:
+        if self._worker_active:
+            return
+        self._worker_active = True
         self.connect_button.configure(state="disabled")
         self.export_button.configure(state="disabled")
+        self.moments_button.configure(state="disabled")
         thread = threading.Thread(target=self._worker_wrapper, args=(name, func), daemon=True)
         thread.start()
 
@@ -1049,7 +1093,7 @@ class ExporterApp:
             progress=self._progress_callback,
             capture_preparation=self.capture_preparation,
         )
-        return archive.conversations()
+        return [archive.self_conversation(), *archive.conversations()]
 
     def _type_filter_changed(self) -> None:
         heading = {
@@ -1096,13 +1140,18 @@ class ExporterApp:
                 "end",
                 iid=str(index),
                 values=(
-                    "群聊" if conversation.is_group else "联系人",
+                    (
+                        "本人"
+                        if conversation.is_self
+                        else ("群聊" if conversation.is_group else "联系人")
+                    ),
                     conversation.display_name,
                     last,
                     conversation.summary.replace("\n", " "),
                 ),
             )
         self._schedule_estimate()
+        self._sync_moments_button_state()
 
     def _selected_conversations(self) -> tuple[Conversation, ...]:
         selected = []
@@ -1126,6 +1175,9 @@ class ExporterApp:
         conversations = self._selected_conversations()
         if not conversations:
             self.estimate_var.set("选择会话后自动估算")
+            return
+        if any(conversation.is_self for conversation in conversations):
+            self.estimate_var.set("“我自己”仅用于朋友圈归档，请点击绿色朋友圈按钮")
             return
         if not self.service or not self.service.archive:
             self.estimate_var.set("连接微信后自动估算")
@@ -1223,6 +1275,12 @@ class ExporterApp:
         if not conversations:
             messagebox.showwarning("未选择会话", "请至少选择一个会话。")
             return
+        if any(conversation.is_self for conversation in conversations):
+            messagebox.showwarning(
+                "请选择朋友圈归档",
+                "“我自己”条目用于导出自己的朋友圈，请点击绿色“导出该人朋友圈归档”按钮。",
+            )
+            return
         if not self.txt_var.get() and not self.pdf_var.get():
             messagebox.showwarning("未选择格式", "请勾选 TXT 或 PDF。")
             return
@@ -1251,6 +1309,30 @@ class ExporterApp:
         self.progress["value"] = 0
         self.status_var.set("准备导出 0% · 已用 0 秒")
         self._run_worker("export", lambda: self.service.export(request, progress=self._progress_callback))
+
+    def _export_moments_clicked(self) -> None:
+        conversations = self._selected_conversations()
+        eligible, reason = _moments_export_eligibility(conversations)
+        if not eligible:
+            messagebox.showwarning("无法导出朋友圈归档", reason)
+            return
+        if not self.service or not self.service.archive:
+            messagebox.showwarning("尚未连接微信", "请先连接微信并读取联系人。")
+            return
+        conversation = conversations[0]
+        self._export_started_at = clock.perf_counter()
+        self._latest_export_status = "准备导出朋友圈归档 0%"
+        self.progress["value"] = 0
+        self.status_var.set("准备导出朋友圈归档 0% · 已用 0 秒")
+        output_dir = Path(self.output_var.get()).expanduser()
+        self._run_worker(
+            "export",
+            lambda: self.service.export_moments_archive(
+                conversation,
+                output_dir,
+                progress=self._progress_callback,
+            ),
+        )
 
     def _parse_dates(self) -> tuple[int, int]:
         start_text = self.start_var.get().strip()
@@ -1289,6 +1371,15 @@ class ExporterApp:
         try:
             while True:
                 kind, payload = self.events.get_nowait()
+                if kind in {
+                    "detect:ok",
+                    "detect:error",
+                    "connect:ok",
+                    "connect:error",
+                    "export:ok",
+                    "export:error",
+                }:
+                    self._worker_active = False
                 if kind == "progress":
                     message, fraction = payload
                     if str(self.progress.cget("mode")) == "indeterminate":
@@ -1336,6 +1427,7 @@ class ExporterApp:
                     self._estimate_cache.clear()
                     self._filter_conversations()
                     self.export_button.configure(state="normal")
+                    self._sync_moments_button_state()
                     self.progress["value"] = 100
                     self.status_var.set(
                         f"已读取 {len(self.conversations)} 个联系人/群聊（已隐藏公众号）"
@@ -1348,6 +1440,7 @@ class ExporterApp:
                     self._latest_export_status = ""
                     self.connect_button.configure(state="normal")
                     self.export_button.configure(state="normal")
+                    self._sync_moments_button_state()
                     self.progress["value"] = 100
                     actual_duration = format_duration(result.duration_seconds)
                     try:
@@ -1377,6 +1470,7 @@ class ExporterApp:
                         self.connect_button.configure(state="normal")
                     if self.service and self.service.archive:
                         self.export_button.configure(state="normal")
+                        self._sync_moments_button_state()
                     self.status_var.set("操作失败")
                     messagebox.showerror("操作失败", str(payload))
         except queue.Empty:
@@ -1421,6 +1515,16 @@ def _conversation_matches_filters(
         or query in conversation.username.lower()
         or query in conversation.summary.lower()
     )
+
+
+def _moments_export_eligibility(
+    conversations: tuple[Conversation, ...],
+) -> tuple[bool, str]:
+    if len(conversations) != 1:
+        return False, "请只选择一个联系人后再导出其朋友圈。"
+    if conversations[0].is_group:
+        return False, "朋友圈导出只支持联系人，不支持群聊。"
+    return True, ""
 
 
 def _calibration_prompt(sample: CalibrationSample) -> str:

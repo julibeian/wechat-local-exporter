@@ -16,6 +16,8 @@ def test_packaged_self_test_payload(tmp_path: Path) -> None:
     assert receipt["zstd"] == "ok"
     assert receipt["wechat_voice_text"] == "ok"
     assert receipt["pdf_image"] == "ok"
+    assert receipt["moments_archive"] == "ok"
+    assert receipt["moments_count"] == 1
     assert receipt["auto_discovery"] == "skipped"
 
     txt_path = tmp_path / receipt["txt"]
@@ -33,3 +35,13 @@ def test_packaged_self_test_payload(tmp_path: Path) -> None:
     assert "微信官方语音转写自检" in extracted
     assert "julibeian" not in extracted
     assert "julibeian" not in str(reader.metadata)
+
+    moments_html = (tmp_path / receipt["moments"]).read_text(encoding="utf-8")
+    moments_payload = json.loads(
+        (tmp_path / receipt["moments_json"]).read_text(encoding="utf-8")
+    )
+    assert "朋友圈离线归档打包自检" in moments_html
+    assert "置顶" in moments_html
+    assert 'loading="lazy"' in moments_html
+    assert moments_payload["summary"]["images"] == 1
+    assert (tmp_path / receipt["moments_manifest"]).is_file()

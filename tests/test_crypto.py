@@ -131,7 +131,7 @@ def test_snapshot_retries_when_wal_changes(tmp_path, monkeypatch) -> None:
     assert wal_destination.read_bytes() == wal_source.read_bytes()
 
 
-def test_collect_required_databases_skips_voice_media(tmp_path) -> None:
+def test_collect_required_databases_includes_moments_but_skips_voice_media(tmp_path) -> None:
     from wechat_exporter.crypto import collect_required_databases
 
     db_dir = tmp_path / "db_storage"
@@ -140,6 +140,7 @@ def test_collect_required_databases_skips_voice_media(tmp_path) -> None:
         db_dir / "session" / "session.db",
         db_dir / "message" / "message_0.db",
         db_dir / "message" / "media_0.db",
+        db_dir / "sns" / "sns.db",
     )
     for path in paths:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -149,4 +150,5 @@ def test_collect_required_databases_skips_voice_media(tmp_path) -> None:
         "contact\\contact.db",
         "session\\session.db",
         "message\\message_0.db",
+        "sns\\sns.db",
     }

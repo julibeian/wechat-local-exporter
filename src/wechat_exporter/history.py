@@ -90,7 +90,11 @@ def append_export_history(
                 account_wxid=account_wxid,
                 conversation_name=conversation.display_name,
                 conversation_username=conversation.username,
-                conversation_type="群聊" if conversation.is_group else "联系人",
+                conversation_type=(
+                    "本人"
+                    if conversation.is_self
+                    else ("群聊" if conversation.is_group else "联系人")
+                ),
                 file_format=absolute_path.suffix.lstrip(".").upper(),
                 file_path=str(absolute_path),
                 message_count=result.message_counts.get(conversation.username, 0),

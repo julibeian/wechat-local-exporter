@@ -11,6 +11,7 @@ import struct
 import subprocess
 import tempfile
 import threading
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable
@@ -21,7 +22,14 @@ from xml.etree import ElementTree
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from PIL import Image
 
-from .models import AccountLocation, MediaReference, Message, PdfImage
+from .models import (
+    AccountLocation,
+    MediaReference,
+    Message,
+    MomentMedia,
+    MomentMediaFile,
+    PdfImage,
+)
 from .windows import ProcessMemory, ProcessInfo, list_wechat_processes
 
 
@@ -35,7 +43,12 @@ _SUPPORTED_CDN_SUFFIXES = (
     ".wechat.com",
     ".weixin.qq.com",
 )
-_MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
+_MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
+_VIDEO_ENCRYPTED_PREFIX_BYTES = 128 * 1024
+_MOMENT_USER_AGENTS = (
+    "MicroMessenger Client",
+    "Mozilla/5.0 WeChat-Archive-Exporter",
+)
 
 
 @dataclass(slots=True)
@@ -43,9 +56,12 @@ class MediaStats:
     requested: int = 0
     embedded: int = 0
     local_originals: int = 0
+    cdn_originals: int = 0
     thumbnails: int = 0
     emoticons: int = 0
     wxgf_converted: int = 0
+    moment_images: int = 0
+    moment_videos: int = 0
     missing: int = 0
     issues: set[str] = field(default_factory=set)
 
@@ -54,6 +70,14 @@ class MediaStats:
             f"PDF 图片：已嵌入 {self.embedded}/{self.requested} 张"
             f"（本机原图 {self.local_originals}、缩略图 {self.thumbnails}、"
             f"表情图片 {self.emoticons}），缺失 {self.missing} 张。"
+        )
+
+    def moments_summary(self) -> str:
+        return (
+            f"朋友圈媒体：已归档 {self.embedded}/{self.requested} 个"
+            f"（照片 {self.moment_images}、视频 {self.moment_videos}；"
+            f"微信 CDN 原文件 {self.cdn_originals}、本机缓存 {self.local_originals}、"
+            f"缩略图兜底 {self.thumbnails}），缺失 {self.missing} 个。"
         )
 
 
@@ -132,8 +156,12 @@ class MediaResolver:
         self._ffmpeg_executable = ffmpeg_executable
         self._ffmpeg_checked = ffmpeg_executable is not None
         self._cache: dict[tuple[str, ...], PdfImage | None] = {}
+        self._moment_file_cache: dict[tuple[str, ...], MomentMediaFile | None] = {}
+        self._moment_file_inflight: set[tuple[str, ...]] = set()
         self._inflight: set[tuple[str, ...]] = set()
         self._attach_indexes: dict[str, dict[str, Path]] = {}
+        self._sns_image_index: dict[str, Path] | None = None
+        self._sns_size_index: dict[tuple[int, int, int], Path] | None = None
         self._cache_condition = threading.Condition()
         self._stats_lock = threading.Lock()
         self._image_key_lock = threading.Lock()
@@ -194,6 +222,97 @@ class MediaResolver:
             else:
                 self.stats.local_originals += 1
         return result
+
+    def resolve_moment(self, media: MomentMedia) -> PdfImage | None:
+        """Resolve a Moments photo for the legacy PDF writer."""
+        if media.kind != "image":
+            return None
+        resolved = self.resolve_moment_file(media)
+        if resolved is None or not resolved.mime_type.startswith("image/"):
+            return None
+        try:
+            return _pdf_image(
+                resolved.data,
+                source=resolved.source,
+                is_thumbnail=resolved.is_thumbnail,
+            )
+        except ValueError:
+            return None
+
+    def resolve_moment_file(self, media: MomentMedia) -> MomentMediaFile | None:
+        """Resolve an original Moments image/video for a static archive."""
+        with self._stats_lock:
+            self.stats.requested += 1
+        cache_key = (
+            "moment-file",
+            media.kind,
+            media.role,
+            media.md5,
+            media.original_url,
+            media.thumbnail_url,
+            media.token,
+            media.thumbnail_token,
+            media.aes_key,
+            media.enc_idx,
+        )
+        with self._cache_condition:
+            while (
+                cache_key in self._moment_file_inflight
+                and cache_key not in self._moment_file_cache
+            ):
+                self._cache_condition.wait()
+            if cache_key in self._moment_file_cache:
+                result = self._moment_file_cache[cache_key]
+                should_resolve = False
+            else:
+                self._moment_file_inflight.add(cache_key)
+                result = None
+                should_resolve = True
+
+        if should_resolve:
+            try:
+                result = self._resolve_moment_file(media)
+            except BaseException:
+                with self._cache_condition:
+                    self._moment_file_inflight.discard(cache_key)
+                    self._cache_condition.notify_all()
+                raise
+            with self._cache_condition:
+                self._moment_file_cache[cache_key] = result
+                self._moment_file_inflight.discard(cache_key)
+                self._cache_condition.notify_all()
+
+        with self._stats_lock:
+            if result is None:
+                self.stats.missing += 1
+                return None
+            self.stats.embedded += 1
+            if media.kind == "video":
+                self.stats.moment_videos += 1
+            else:
+                self.stats.moment_images += 1
+            if result.is_thumbnail:
+                self.stats.thumbnails += 1
+            elif result.source.startswith("微信官方 CDN"):
+                self.stats.cdn_originals += 1
+            else:
+                self.stats.local_originals += 1
+        return result
+
+    def _resolve_moment_file(self, media: MomentMedia) -> MomentMediaFile | None:
+        if media.kind == "video":
+            return self._resolve_moment_video(media)
+        image = self._resolve_moment_image(media)
+        if image is None:
+            return None
+        extension, mime_type = _image_file_type(image.data)
+        return MomentMediaFile(
+            data=image.data,
+            extension=extension,
+            mime_type=mime_type,
+            source=image.source,
+            is_thumbnail=image.is_thumbnail,
+        )
 
     def _add_issue(self, issue: str) -> None:
         with self._stats_lock:
@@ -272,6 +391,177 @@ class MediaResolver:
         self._add_issue("部分表情图片在本机和微信 CDN 均不可用")
         return None
 
+    def _resolve_moment_image(self, media: MomentMedia) -> PdfImage | None:
+        original_url = _with_token(
+            media.original_url,
+            media.token,
+            media.enc_idx,
+            original=True,
+        )
+        if original_url:
+            image = self._download_moment_image(
+                original_url,
+                aes_key=media.aes_key,
+                source="微信官方 CDN 原图",
+                is_thumbnail=False,
+            )
+            if image is not None:
+                return image
+
+        local = self._find_sns_image(media.md5, media)
+        if local is not None:
+            try:
+                data = local.read_bytes()
+                image = self._decode_image_blob(
+                    data,
+                    aes_key=media.aes_key,
+                    source="本机朋友圈缓存（原始字节）",
+                    is_thumbnail=False,
+                )
+                if image is not None:
+                    return image
+            except OSError:
+                self._add_issue("部分本机朋友圈图片文件无法读取")
+
+        thumbnail_url = _with_token(
+            media.thumbnail_url, media.thumbnail_token or media.token, media.enc_idx
+        )
+        if thumbnail_url:
+            image = self._download_moment_image(
+                thumbnail_url,
+                aes_key=media.aes_key,
+                source="微信官方 CDN 缩略图",
+                is_thumbnail=True,
+            )
+            if image is not None:
+                self._add_issue("部分朋友圈原图不可用，归档中已明确标注缩略图兜底")
+                return image
+
+        self._add_issue("部分朋友圈照片的原图和缩略图均不可用")
+        return None
+
+    def _resolve_moment_video(self, media: MomentMedia) -> MomentMediaFile | None:
+        original_url = _with_token(
+            media.original_url,
+            media.token,
+            media.enc_idx,
+            original=True,
+            token_first=True,
+        )
+        if original_url:
+            try:
+                data = self._download(original_url)
+                resolved = self._decode_video_blob(
+                    data,
+                    key=media.aes_key,
+                    source="微信官方 CDN 原视频",
+                )
+                if resolved is not None:
+                    return resolved
+            except (OSError, ValueError, RuntimeError):
+                pass
+
+        local = self._find_sns_video(media)
+        if local is not None:
+            try:
+                resolved = self._decode_video_blob(
+                    local.read_bytes(),
+                    key=media.aes_key,
+                    source="本机朋友圈视频缓存",
+                )
+                if resolved is not None:
+                    return resolved
+            except OSError:
+                self._add_issue("部分本机朋友圈视频文件无法读取")
+
+        self._add_issue("部分朋友圈视频在微信 CDN 和本机缓存中均不可用")
+        return None
+
+    def _decode_video_blob(
+        self,
+        data: bytes,
+        *,
+        key: str,
+        source: str,
+    ) -> MomentMediaFile | None:
+        extension, mime_type = _video_file_type(data)
+        if not extension and key:
+            prefix_size = min(len(data), _VIDEO_ENCRYPTED_PREFIX_BYTES)
+            stream = _isaac64_keystream(key, prefix_size)
+            if stream is not None:
+                prefix = bytes(
+                    value ^ stream[index]
+                    for index, value in enumerate(data[:prefix_size])
+                )
+                candidate = prefix + data[prefix_size:]
+                extension, mime_type = _video_file_type(candidate)
+                if extension:
+                    data = candidate
+        if not extension:
+            return None
+        return MomentMediaFile(
+            data=data,
+            extension=extension,
+            mime_type=mime_type,
+            source=source,
+        )
+
+    def _download_moment_image(
+        self,
+        url: str,
+        *,
+        aes_key: str,
+        source: str,
+        is_thumbnail: bool,
+    ) -> PdfImage | None:
+        try:
+            data = self._download(url)
+        except (OSError, ValueError, RuntimeError):
+            return None
+        return self._decode_image_blob(
+            data,
+            aes_key=aes_key,
+            source=source,
+            is_thumbnail=is_thumbnail,
+        )
+
+    def _decode_image_blob(
+        self,
+        data: bytes,
+        *,
+        aes_key: str,
+        source: str,
+        is_thumbnail: bool,
+    ) -> PdfImage | None:
+        try:
+            if not _image_format(data) and aes_key:
+                try:
+                    data = _decrypt_cdn_blob(data, aes_key)
+                except ValueError:
+                    pass
+            if not _image_format(data) and aes_key:
+                decrypted = _isaac64_xor(data, aes_key)
+                if decrypted is not None:
+                    data = decrypted
+            if not _image_format(data):
+                keys = self._account_image_keys()
+                if data.startswith(_V2_MAGIC) and keys is None:
+                    self._add_issue("未能从当前微信登录进程读取朋友圈图片密钥")
+                    return None
+                key, xor_key = keys or (b"", 0)
+                data = decrypt_image_dat(data, key, xor_key)
+            if data.startswith(b"wxgf"):
+                converted = self._wxgf_to_png(data)
+                if converted is None:
+                    self._add_issue("缺少可用的 HEVC 解码器，部分朋友圈照片未导出")
+                    return None
+                data = converted
+                with self._stats_lock:
+                    self.stats.wxgf_converted += 1
+            return _pdf_image(data, source=source, is_thumbnail=is_thumbnail)
+        except (OSError, ValueError, RuntimeError):
+            return None
+
     def _account_image_keys(self) -> tuple[bytes, int] | None:
         if self._image_keys_checked:
             return self._image_keys
@@ -325,6 +615,107 @@ class MediaResolver:
                     return candidate
         return None
 
+    def _find_sns_image(
+        self, md5: str, media: MomentMedia | None = None
+    ) -> Path | None:
+        normalized = md5.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{32}", normalized):
+            normalized = ""
+        cache_root = self.account.account_dir / "cache"
+        if not cache_root.is_dir():
+            return None
+
+        if normalized:
+            for month in sorted(cache_root.iterdir(), reverse=True):
+                image_root = month / "Sns" / "Img"
+                for candidate in (
+                    image_root / normalized[:2] / normalized[2:],
+                    image_root / normalized[:2] / normalized,
+                    image_root / normalized,
+                ):
+                    if candidate.is_file():
+                        return candidate
+
+            with self._attach_index_lock:
+                if self._sns_image_index is None:
+                    index: dict[str, Path] = {}
+                    for image_root in cache_root.glob("*/Sns/Img"):
+                        if not image_root.is_dir():
+                            continue
+                        for candidate in image_root.rglob("*"):
+                            if not candidate.is_file():
+                                continue
+                            name = candidate.name.lower()
+                            index.setdefault(name, candidate)
+                            index.setdefault(candidate.parent.name.lower() + name, candidate)
+                    self._sns_image_index = index
+                found = self._sns_image_index.get(normalized)
+            if found is not None:
+                return found
+
+        if media is not None and (media.total_size or (media.width and media.height)):
+            return self._find_sns_image_by_size(media)
+        return None
+
+    def _find_sns_image_by_size(self, media: MomentMedia) -> Path | None:
+        """Fallback cache lookup by (decrypted length, width, height).
+
+        WeChat 4.x names the Sns cache files with a hash that cannot be
+        derived from the XML record, so the original-size attributes are used
+        to match decrypted cache files instead.
+        """
+        with self._attach_index_lock:
+            if self._sns_size_index is None:
+                index: dict[tuple[int, int, int], Path] = {}
+                keys = self._account_image_keys()
+                if keys is not None:
+                    aes_key, xor_key = keys
+                    for image_root in self.account.account_dir.glob("cache/*/Sns/Img"):
+                        if not image_root.is_dir():
+                            continue
+                        for candidate in image_root.rglob("*"):
+                            if not candidate.is_file():
+                                continue
+                            try:
+                                plain = decrypt_image_dat(
+                                    candidate.read_bytes(), aes_key, xor_key
+                                )
+                                if not plain.startswith(b"\xff\xd8") and not plain.startswith(
+                                    b"\x89PNG"
+                                ):
+                                    continue
+                                width, height = Image.open(io.BytesIO(plain)).size
+                            except (OSError, ValueError, RuntimeError):
+                                continue
+                            index.setdefault((len(plain), width, height), candidate)
+                            index.setdefault((len(plain), 0, 0), candidate)
+                self._sns_size_index = index
+            hit = self._sns_size_index.get(
+                (media.total_size, media.width, media.height)
+            )
+            if hit is None and media.total_size:
+                hit = self._sns_size_index.get((media.total_size, 0, 0))
+            return hit
+
+    def _find_sns_video(self, media: MomentMedia) -> Path | None:
+        """Best-effort lookup for already cached Moments video bytes."""
+        cache_root = self.account.account_dir / "cache"
+        if not cache_root.is_dir():
+            return None
+        normalized = media.md5.strip().lower()
+        names = {normalized, normalized[2:]} if normalized else set()
+        for pattern in ("*/Sns/Video", "*/Sns/Media"):
+            for video_root in cache_root.glob(pattern):
+                if not video_root.is_dir():
+                    continue
+                for candidate in video_root.rglob("*"):
+                    if not candidate.is_file():
+                        continue
+                    lowered = candidate.name.lower()
+                    if lowered in names or any(name and name in lowered for name in names):
+                        return candidate
+        return None
+
     def _download(self, url: str) -> bytes:
         if self._download_override is not None:
             return self._download_override(url)
@@ -335,21 +726,29 @@ class MediaResolver:
             _SUPPORTED_CDN_SUFFIXES
         ):
             raise ValueError("表情地址不是微信官方 CDN")
-        request = urllib.request.Request(
-            normalized,
-            headers={"User-Agent": "Mozilla/5.0 WeChat-PDF-Exporter"},
-        )
-        with urllib.request.urlopen(request, timeout=15) as response:
-            final_host = (urllib.parse.urlparse(response.geturl()).hostname or "").lower()
-            if not final_host.endswith(_SUPPORTED_CDN_SUFFIXES):
-                raise ValueError("表情下载被重定向到非微信域名")
-            declared = int(response.headers.get("Content-Length") or 0)
-            if declared > _MAX_DOWNLOAD_BYTES:
-                raise ValueError("表情图片超过大小限制")
-            data = response.read(_MAX_DOWNLOAD_BYTES + 1)
-        if len(data) > _MAX_DOWNLOAD_BYTES:
-            raise ValueError("表情图片超过大小限制")
-        return data
+        errors: list[OSError] = []
+        for user_agent in _MOMENT_USER_AGENTS:
+            request = urllib.request.Request(
+                normalized,
+                headers={"User-Agent": user_agent},
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=15) as response:
+                    final_host = (
+                        urllib.parse.urlparse(response.geturl()).hostname or ""
+                    ).lower()
+                    if not final_host.endswith(_SUPPORTED_CDN_SUFFIXES):
+                        raise ValueError("表情下载被重定向到非微信域名")
+                    declared = int(response.headers.get("Content-Length") or 0)
+                    if declared > _MAX_DOWNLOAD_BYTES:
+                        raise ValueError("表情图片超过大小限制")
+                    data = response.read(_MAX_DOWNLOAD_BYTES + 1)
+                if len(data) > _MAX_DOWNLOAD_BYTES:
+                    raise ValueError("表情图片超过大小限制")
+                return data
+            except urllib.error.HTTPError as error:
+                errors.append(error)
+        raise (errors[-1] if errors else OSError("表情图片下载失败"))
 
     def _wxgf_to_png(self, data: bytes) -> bytes | None:
         start = data.find(b"\x00\x00\x00\x01")
@@ -479,6 +878,28 @@ def _image_format(data: bytes) -> str:
     return ""
 
 
+def _image_file_type(data: bytes) -> tuple[str, str]:
+    return {
+        "JPEG": ("jpg", "image/jpeg"),
+        "PNG": ("png", "image/png"),
+        "GIF": ("gif", "image/gif"),
+        "WEBP": ("webp", "image/webp"),
+        "BMP": ("bmp", "image/bmp"),
+    }.get(_image_format(data), ("", ""))
+
+
+def _video_file_type(data: bytes) -> tuple[str, str]:
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        if data[8:12] == b"qt  ":
+            return "mov", "video/quicktime"
+        return "mp4", "video/mp4"
+    if data.startswith(b"\x1a\x45\xdf\xa3"):
+        return "webm", "video/webm"
+    if data.startswith(b"RIFF") and data[8:12] == b"AVI ":
+        return "avi", "video/x-msvideo"
+    return "", ""
+
+
 def _pdf_image(data: bytes, *, source: str, is_thumbnail: bool = False) -> PdfImage:
     image_format = _image_format(data)
     if not image_format or image_format == "WXGF":
@@ -510,6 +931,151 @@ def _decrypt_cdn_blob(data: bytes, aes_key_hex: str) -> bytes:
     return _pkcs7_unpad(decryptor.update(data) + decryptor.finalize())
 
 
+_ISAAC64_MASK = (1 << 64) - 1
+
+
+def _isaac64_mix(values: tuple[int, ...]) -> tuple[int, ...]:
+    """Run the reference ISAAC-64 initialization mix with 64-bit wrapping."""
+    a, b, c, d, e, f, g, h = values
+    mask = _ISAAC64_MASK
+    a = (a - e) & mask
+    f ^= h >> 9
+    h = (h + a) & mask
+    b = (b - f) & mask
+    g ^= (a << 9) & mask
+    a = (a + b) & mask
+    c = (c - g) & mask
+    h ^= b >> 23
+    b = (b + c) & mask
+    d = (d - h) & mask
+    a ^= (c << 15) & mask
+    c = (c + d) & mask
+    e = (e - a) & mask
+    b ^= d >> 14
+    d = (d + e) & mask
+    f = (f - b) & mask
+    c ^= (e << 20) & mask
+    e = (e + f) & mask
+    g = (g - c) & mask
+    d ^= f >> 17
+    f = (f + g) & mask
+    h = (h - d) & mask
+    e ^= (g << 14) & mask
+    g = (g + h) & mask
+    return tuple(value & mask for value in (a, b, c, d, e, f, g, h))
+
+
+def _isaac64_keystream(key_text: str, size: int) -> bytes | None:
+    """Generate WeChat's numeric-key ISAAC-64 stream in big-endian order."""
+    text = (key_text or "").strip()
+    if not text.isdecimal() or size <= 0:
+        return None
+    seed = int(text) & _ISAAC64_MASK
+    results = [0] * 256
+    results[0] = seed
+    memory = [0] * 256
+    # Bob Jenkins' ISAAC-64 reference uses ...7c13.  The previous ...7c15
+    # typo produces an entirely different stream and makes valid WeChat CDN
+    # payloads look corrupt after XOR.
+    state = (0x9E3779B97F4A7C13,) * 8
+    for _ in range(4):
+        state = _isaac64_mix(state)
+    for offset in range(0, 256, 8):
+        state = tuple(
+            (state[index] + results[offset + index]) & _ISAAC64_MASK
+            for index in range(8)
+        )
+        state = _isaac64_mix(state)
+        memory[offset : offset + 8] = state
+    for offset in range(0, 256, 8):
+        state = tuple(
+            (state[index] + memory[offset + index]) & _ISAAC64_MASK
+            for index in range(8)
+        )
+        state = _isaac64_mix(state)
+        memory[offset : offset + 8] = state
+
+    a = b = c = 0
+    output = bytearray()
+    while len(output) < size:
+        c = (c + 1) & _ISAAC64_MASK
+        b = (b + c) & _ISAAC64_MASK
+        for index in range(256):
+            x = memory[index]
+            branch = index & 3
+            if branch == 0:
+                a ^= (~(a << 21)) & _ISAAC64_MASK
+            elif branch == 1:
+                a ^= a >> 5
+            elif branch == 2:
+                a ^= (a << 12) & _ISAAC64_MASK
+            else:
+                a ^= a >> 33
+            a = (a + memory[(index + 128) & 255]) & _ISAAC64_MASK
+            y = (memory[(x >> 3) & 255] + a + b) & _ISAAC64_MASK
+            memory[index] = y
+            b = (memory[(y >> 11) & 255] + x) & _ISAAC64_MASK
+            results[index] = b
+        for value in reversed(results):
+            output.extend(value.to_bytes(8, "big"))
+            if len(output) >= size:
+                break
+    return bytes(output[:size])
+
+
+def _isaac64_xor(data: bytes, key_text: str) -> bytes | None:
+    """Decrypt WeChat 4.x CDN-encrypted Moments media with ISAAC-64 XOR.
+
+    The XML key is a decimal 64-bit seed.  WeChat consumes each generated
+    block in reverse result order and big-endian byte order.  Returns bytes
+    only when the decrypted payload has a recognized image signature.
+    """
+    if not data or not key_text:
+        return None
+    stream = _isaac64_keystream(key_text, len(data))
+    if stream is None:
+        return None
+    plain = bytes(a ^ b for a, b in zip(data, stream, strict=True))
+    return plain if _image_format(plain) else None
+
+
+def _with_token(
+    url: str,
+    token: str,
+    idx: str = "",
+    *,
+    original: bool = False,
+    token_first: bool = False,
+) -> str:
+    normalized = html.unescape(url or "").strip()
+    if normalized.startswith("//"):
+        normalized = "https:" + normalized
+    if not normalized:
+        return normalized
+    parsed = urllib.parse.urlparse(normalized)
+    scheme = "https" if parsed.scheme == "http" else parsed.scheme
+    path = re.sub(r"/\d+$", "/0", parsed.path) if original else parsed.path
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    if token or idx:
+        query = [
+            (key, value)
+            for key, value in query
+            if key.lower() not in {"token", "idx"}
+        ]
+        auth_query = []
+        if token:
+            auth_query.append(("token", token))
+        auth_query.append(("idx", idx or "1"))
+        query = auth_query + query if token_first else query + auth_query
+    return urllib.parse.urlunparse(
+        parsed._replace(
+            scheme=scheme,
+            path=path,
+            query=urllib.parse.urlencode(query),
+        )
+    )
+
+
 def _pkcs7_unpad(data: bytes) -> bytes:
     if not data:
         raise ValueError("空的 PKCS7 数据")
@@ -520,17 +1086,23 @@ def _pkcs7_unpad(data: bytes) -> bytes:
 
 
 def _find_v2_probe(account_dir: Path) -> bytes | None:
-    root = account_dir / "msg" / "attach"
-    if not root.is_dir():
-        return None
-    for candidate in root.rglob("*.dat"):
-        try:
-            with candidate.open("rb") as stream:
-                head = stream.read(31)
-        except OSError:
+    roots = [account_dir / "msg" / "attach"]
+    cache_root = account_dir / "cache"
+    if cache_root.is_dir():
+        roots.extend(path for path in cache_root.glob("*/Sns/Img") if path.is_dir())
+    for root in roots:
+        if not root.is_dir():
             continue
-        if head.startswith(_V2_MAGIC) and len(head) >= 31:
-            return head[15:31]
+        for candidate in root.rglob("*"):
+            if not candidate.is_file():
+                continue
+            try:
+                with candidate.open("rb") as stream:
+                    head = stream.read(31)
+            except OSError:
+                continue
+            if head.startswith(_V2_MAGIC) and len(head) >= 31:
+                return head[15:31]
     return None
 
 

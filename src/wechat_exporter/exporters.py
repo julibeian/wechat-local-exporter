@@ -13,7 +13,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 
-from .models import Conversation, Message, PdfImage
+from .models import Conversation, Message, Moment, MomentMedia, PdfImage
 
 
 def safe_filename(value: str, fallback: str = "微信聊天") -> str:
@@ -275,6 +275,320 @@ class PdfTranscriptWriter:
         self._canvas = None
 
     def __enter__(self) -> PdfTranscriptWriter:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+
+class MomentsPdfWriter:
+    """Write one contact's visible Moments with clickable full-image pages."""
+
+    def __init__(self, path: Path, conversation: Conversation):
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.conversation = conversation
+        self.display_name = _pdf_safe_text(conversation.display_name)
+        self.font_name = _register_cjk_font()
+        self.bold_font_name = self.font_name
+        self.page_width, self.page_height = A4
+        self.left = 42
+        self.right = 42
+        self.top = 44
+        self.bottom = 42
+        self.page_number = 0
+        self.count = 0
+        self.photo_count = 0
+        self.current_section: str | None = None
+        self.current_date: object = None
+        self._photos: list[
+            tuple[str, str, PdfImage, ImageReader, str]
+        ] = []
+        safe_title = f"微信朋友圈 - {self.display_name}"
+        self._canvas = canvas.Canvas(
+            str(path), pagesize=A4, pageCompression=1, title=safe_title
+        )
+        self._canvas.setTitle(safe_title)
+        self._canvas.setAuthor("微信 TXT/PDF 本地导出工具")
+        self._canvas.setSubject("本机可见朋友圈只读导出")
+        self.y = 0.0
+        self._start_page(first=True)
+
+    def _start_page(self, *, first: bool = False) -> None:
+        self.page_number += 1
+        self.y = self.page_height - self.top
+        if first:
+            self._canvas.setFont(self.bold_font_name, 18)
+            self._canvas.setFillColor(colors.HexColor("#172033"))
+            self._canvas.drawString(self.left, self.y, "微信朋友圈公开内容")
+            self.y -= 27
+            self._canvas.setFont(self.font_name, 10)
+            self._canvas.setFillColor(colors.HexColor("#43506A"))
+            metadata = [
+                f"联系人：{self.display_name}",
+                f"联系人标识：{self.conversation.username}",
+                f"导出时间：{datetime.now():%Y-%m-%d %H:%M:%S}",
+                "范围：当前账号本机已同步且仍可见的全部朋友圈记录（含可识别置顶）。",
+                "照片：优先读取微信 CDN 原图，不重编码；点击照片可前往 PDF 内原图页。",
+            ]
+            for line in metadata:
+                self._canvas.drawString(self.left, self.y, _pdf_safe_text(line))
+                self.y -= 15
+            self.y -= 6
+            self._canvas.setStrokeColor(colors.HexColor("#CBD5E1"))
+            self._canvas.line(self.left, self.y, self.page_width - self.right, self.y)
+            self.y -= 18
+        else:
+            self._canvas.setFont(self.font_name, 9)
+            self._canvas.setFillColor(colors.HexColor("#64748B"))
+            self._canvas.drawString(
+                self.left, self.y, f"微信朋友圈 - {self.display_name}"
+            )
+            self.y -= 20
+
+    def _finish_page(self) -> None:
+        self._canvas.setFont(self.font_name, 8)
+        self._canvas.setFillColor(colors.HexColor("#7C879D"))
+        self._canvas.drawCentredString(
+            self.page_width / 2, 22, f"第 {self.page_number} 页"
+        )
+
+    def _new_page(self) -> None:
+        self._finish_page()
+        self._canvas.showPage()
+        self._start_page()
+
+    def _ensure_space(self, height: float) -> None:
+        if self.y - height < self.bottom:
+            self._new_page()
+
+    def write(
+        self,
+        moment: Moment,
+        photos: tuple[tuple[MomentMedia, PdfImage | None], ...] = (),
+    ) -> None:
+        section = "置顶" if moment.is_pinned else "按日期"
+        if section != self.current_section:
+            self._ensure_space(38)
+            self.current_section = section
+            self.current_date = None
+            self._canvas.setFont(self.bold_font_name, 14)
+            self._canvas.setFillColor(colors.HexColor("#2457A7"))
+            self._canvas.drawString(self.left, self.y, section)
+            self.y -= 23
+
+        date_value = moment.datetime.date() if moment.timestamp > 0 else None
+        if date_value != self.current_date:
+            self._ensure_space(28)
+            self.current_date = date_value
+            label = (
+                moment.datetime.strftime("%Y 年 %m 月 %d 日")
+                if moment.timestamp > 0
+                else "日期未知"
+            )
+            label_width = pdfmetrics.stringWidth(label, self.font_name, 9)
+            center = self.page_width / 2
+            self._canvas.setStrokeColor(colors.HexColor("#D7DEE9"))
+            self._canvas.line(
+                self.left, self.y - 4, center - label_width / 2 - 10, self.y - 4
+            )
+            self._canvas.line(
+                center + label_width / 2 + 10,
+                self.y - 4,
+                self.page_width - self.right,
+                self.y - 4,
+            )
+            self._canvas.setFont(self.font_name, 9)
+            self._canvas.setFillColor(colors.HexColor("#65748B"))
+            self._canvas.drawCentredString(center, self.y - 7, label)
+            self.y -= 23
+
+        self._ensure_space(45)
+        back_destination = f"moment-post-{self.count + 1}"
+        self._canvas.bookmarkPage(back_destination)
+        time_text = moment.datetime.strftime("%H:%M:%S") if moment.timestamp > 0 else "时间未知"
+        header = time_text + ("  [置顶]" if moment.is_pinned else "")
+        self._canvas.setFont(self.bold_font_name, 10)
+        self._canvas.setFillColor(colors.HexColor("#1C6B48"))
+        self._canvas.drawString(self.left, self.y, _pdf_safe_text(header))
+        self.y -= 16
+
+        content = moment.content or ("[照片动态]" if photos else "[无文字内容]")
+        self._canvas.setFont(self.font_name, 10)
+        self._canvas.setFillColor(colors.HexColor("#1E293B"))
+        for line in _wrap_text(
+            _pdf_safe_text(content),
+            self.font_name,
+            10,
+            self.page_width - self.left - self.right - 8,
+        ):
+            if self.y - 14 < self.bottom:
+                self._new_page()
+                self._canvas.setFont(self.font_name, 10)
+                self._canvas.setFillColor(colors.HexColor("#1E293B"))
+            self._canvas.drawString(self.left + 8, self.y, line)
+            self.y -= 14
+
+        if moment.location:
+            self._ensure_space(18)
+            self._canvas.setFont(self.font_name, 8.5)
+            self._canvas.setFillColor(colors.HexColor("#64748B"))
+            self._canvas.drawString(
+                self.left + 8,
+                self.y,
+                _pdf_safe_text(f"位置：{moment.location}"),
+            )
+            self.y -= 14
+
+        for index, (_media, image) in enumerate(photos, start=1):
+            if image is None:
+                self._ensure_space(25)
+                self._canvas.setFont(self.font_name, 8.5)
+                self._canvas.setFillColor(colors.HexColor("#A04B38"))
+                self._canvas.drawString(
+                    self.left + 8,
+                    self.y,
+                    f"[照片 {index} 原图当前不可用]",
+                )
+                self.y -= 17
+                continue
+            reader = ImageReader(io.BytesIO(image.data))
+            available_width = self.page_width - self.left - self.right - 16
+            available_height = 340
+            scale = min(
+                1.0,
+                available_width / image.width,
+                available_height / image.height,
+            )
+            display_width = max(1.0, image.width * scale)
+            display_height = max(1.0, image.height * scale)
+            self._ensure_space(display_height + 34)
+            x = self.left + 8
+            image_bottom = self.y - display_height
+            self._canvas.drawImage(
+                reader,
+                x,
+                image_bottom,
+                width=display_width,
+                height=display_height,
+                preserveAspectRatio=True,
+                mask="auto",
+            )
+            destination = f"moment-photo-{len(self._photos) + 1}"
+            self._canvas.linkRect(
+                "点击查看原图页",
+                destination,
+                (x, image_bottom, x + display_width, self.y),
+                relative=0,
+                thickness=0,
+            )
+            self.y = image_bottom - 12
+            details = (
+                f"照片 {index} · 点击查看原图页 · {image.source} · "
+                f"{image.image_format} · {image.width}×{image.height} 像素"
+            )
+            if image.is_thumbnail:
+                details += " · [缩略图兜底]"
+            self._canvas.setFont(self.font_name, 8)
+            self._canvas.setFillColor(colors.HexColor("#64748B"))
+            self._canvas.drawString(self.left + 8, self.y, _pdf_safe_text(details))
+            self.y -= 15
+            self._photos.append(
+                (destination, back_destination, image, reader, f"动态 {self.count + 1} · 照片 {index}")
+            )
+            self.photo_count += 1
+
+        video_count = sum(1 for item in moment.media if item.kind == "video")
+        if video_count:
+            self._ensure_space(18)
+            self._canvas.setFont(self.font_name, 8.5)
+            self._canvas.setFillColor(colors.HexColor("#64748B"))
+            self._canvas.drawString(
+                self.left + 8,
+                self.y,
+                f"[该动态另含 {video_count} 个视频；本功能仅导出说说和照片]",
+            )
+            self.y -= 15
+
+        self.y -= 8
+        self._canvas.setStrokeColor(colors.HexColor("#E2E8F0"))
+        self._canvas.line(self.left + 8, self.y, self.page_width - self.right, self.y)
+        self.y -= 13
+        self.count += 1
+
+    def _write_original_photo_pages(self) -> None:
+        total = len(self._photos)
+        for index, (destination, back_destination, image, reader, label) in enumerate(
+            self._photos,
+            start=1,
+        ):
+            self._canvas.showPage()
+            self.page_number += 1
+            self._canvas.bookmarkPage(destination)
+            self._canvas.setFont(self.bold_font_name, 12)
+            self._canvas.setFillColor(colors.HexColor("#172033"))
+            self._canvas.drawString(
+                self.left,
+                self.page_height - self.top,
+                _pdf_safe_text(f"原图 {index}/{total} · {label}"),
+            )
+            available_width = self.page_width - self.left - self.right
+            available_height = self.page_height - self.top - self.bottom - 55
+            scale = min(
+                1.0,
+                available_width / image.width,
+                available_height / image.height,
+            )
+            display_width = max(1.0, image.width * scale)
+            display_height = max(1.0, image.height * scale)
+            x = (self.page_width - display_width) / 2
+            y = self.bottom + (available_height - display_height) / 2
+            self._canvas.drawImage(
+                reader,
+                x,
+                y,
+                width=display_width,
+                height=display_height,
+                preserveAspectRatio=True,
+                mask="auto",
+            )
+            self._canvas.linkRect(
+                "点击返回动态",
+                back_destination,
+                (x, y, x + display_width, y + display_height),
+                relative=0,
+                thickness=0,
+            )
+            self._canvas.setFont(self.font_name, 8)
+            self._canvas.setFillColor(colors.HexColor("#64748B"))
+            self._canvas.drawString(
+                self.left,
+                33,
+                _pdf_safe_text(
+                    f"{image.source} · {image.image_format} · "
+                    f"{image.width}×{image.height} 像素 · 点击图片返回动态"
+                ),
+            )
+            self._finish_page()
+
+    def close(self) -> None:
+        if self._canvas is None:
+            return
+        self._ensure_space(32)
+        self._canvas.setFont(self.font_name, 9)
+        self._canvas.setFillColor(colors.HexColor("#556277"))
+        self._canvas.drawString(
+            self.left,
+            self.y,
+            f"共导出 {self.count} 条朋友圈、{self.photo_count} 张可用照片。",
+        )
+        self._finish_page()
+        if self._photos:
+            self._write_original_photo_pages()
+        self._canvas.save()
+        self._canvas = None
+
+    def __enter__(self) -> MomentsPdfWriter:
         return self
 
     def __exit__(self, *_: object) -> None:

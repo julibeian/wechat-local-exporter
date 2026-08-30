@@ -6,6 +6,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 import hashlib
 from pathlib import Path
+import tempfile
 import time
 
 from .archive import SenderCalibration, WeChatArchive
@@ -14,9 +15,14 @@ from .crypto import (
     collect_required_databases,
     extract_database_keys,
 )
-from .exporters import PdfTranscriptWriter, TxtTranscriptWriter, safe_filename
+from .exporters import (
+    PdfTranscriptWriter,
+    TxtTranscriptWriter,
+    safe_filename,
+)
 from .key_capture import KeyCapturePreparation, capture_keys_during_wechat_start
 from .media import MediaResolver
+from .moments_archive import MomentsArchiveWriter
 from .models import (
     AccountLocation,
     Conversation,
@@ -272,6 +278,120 @@ class ExporterService:
             )
         return result
 
+    def export_moments_archive(
+        self,
+        conversation: Conversation,
+        output_dir: Path,
+        *,
+        progress: Callable[[str, float], None] | None = None,
+    ) -> ExportResult:
+        """Export one contact's or the user's own Moments as an offline archive."""
+        if not self.archive:
+            raise RuntimeError("请先读取会话")
+        if conversation.is_group:
+            raise ValueError("朋友圈归档只支持单个联系人，不支持群聊。")
+
+        started_at = time.perf_counter()
+        if progress:
+            progress("正在读取该联系人的全部朋友圈...", 0.02)
+        moments = self.archive.contact_moments(conversation)
+        if not moments:
+            raise ValueError(
+                "本机朋友圈库中没有找到该联系人的公开内容。"
+                "请先在微信中打开该联系人的朋友圈并滚动同步历史内容，然后重新连接。"
+            )
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        moments_dir = _conversation_output_dir(output_dir, conversation) / "朋友圈"
+        moments_dir.mkdir(parents=True, exist_ok=True)
+        archive_dir = _available_directory(
+            moments_dir, safe_filename(f"{conversation.display_name}_朋友圈离线归档")
+        )
+        resolver = MediaResolver(self.account, self.archive.self_wxid)
+        total = len(moments)
+        media_total = sum(len(moment.media) for moment in moments)
+
+        with tempfile.TemporaryDirectory(
+            prefix=".朋友圈归档构建-", dir=moments_dir
+        ) as temporary:
+            temporary_dir = Path(temporary)
+            writer = MomentsArchiveWriter(temporary_dir, conversation)
+            with ThreadPoolExecutor(
+                max_workers=5,
+                thread_name_prefix="wechat-moments-media",
+            ) as executor:
+                for index, moment in enumerate(moments, start=1):
+                    futures = [
+                        executor.submit(resolver.resolve_moment_file, media)
+                        for media in moment.media
+                    ]
+                    resolved = tuple(
+                        (media, future.result())
+                        for media, future in zip(moment.media, futures, strict=True)
+                    )
+                    writer.write(moment, resolved)
+                    if progress:
+                        fraction = 0.04 + (index / total) * 0.94
+                        progress(
+                            f"正在归档朋友圈 {index}/{total} 条 · 媒体 {media_total} 个",
+                            min(0.98, fraction),
+                        )
+            writer.finish()
+            temporary_dir.replace(archive_dir)
+
+        html_path = archive_dir / "index.html"
+        json_path = archive_dir / "moments.json"
+        manifest_path = archive_dir / "manifest-sha256.txt"
+
+        result = ExportResult(
+            files=[html_path, json_path, manifest_path],
+            file_conversations={
+                html_path: conversation,
+                json_path: conversation,
+                manifest_path: conversation,
+            },
+            message_counts={conversation.username: len(moments)},
+        )
+        if conversation.is_self:
+            result.warnings.append(
+                "本人朋友圈范围：已导出本机库中属于当前账号的全部记录，"
+                "包括私密（仅自己可见）和分组可见动态；微信尚未同步到本机的记录无法离线导出。"
+            )
+        else:
+            result.warnings.append(
+                "朋友圈范围：已导出当前账号本机已同步且仍可见的全部记录；"
+                "微信尚未同步到本机的更早内容无法离线导出。"
+            )
+        requested = resolver.stats.requested
+        if requested:
+            result.warnings.append(resolver.stats.moments_summary())
+            result.warnings.extend(sorted(resolver.stats.issues))
+            if resolver.stats.embedded < requested:
+                result.warnings.append(
+                    "媒体未全部导出：请在微信中打开该联系人的朋友圈，从最新往下滚动浏览，"
+                    "让图片和视频重新加载后再返回本工具导出。缺失项已在 HTML 和 JSON 中明确标注。"
+                )
+        result.duration_seconds = time.perf_counter() - started_at
+        if progress:
+            progress(
+                f"朋友圈归档 100% · {len(moments)} 条 · {media_total} 个媒体 · "
+                f"实际用时 {format_duration(result.duration_seconds)}",
+                1.0,
+            )
+        return result
+
+    def export_moments_pdf(
+        self,
+        conversation: Conversation,
+        output_dir: Path,
+        *,
+        progress: Callable[[str, float], None] | None = None,
+    ) -> ExportResult:
+        """Compatibility wrapper retained for callers from version 1.1."""
+        return self.export_moments_archive(
+            conversation, output_dir, progress=progress
+        )
+
 
 def estimate_export_seconds(
     workload: ExportWorkload,
@@ -367,11 +487,24 @@ def _available_stem(
     return candidate
 
 
+def _available_directory(parent: Path, base: str) -> Path:
+    candidate = parent / base
+    suffix = 2
+    while candidate.exists():
+        candidate = parent / f"{base} ({suffix})"
+        suffix += 1
+    return candidate
+
+
 def _conversation_output_dir(
     output_dir: Path,
     conversation: Conversation,
 ) -> Path:
-    category = "群聊" if conversation.is_group else "联系人"
+    category = (
+        "本人"
+        if conversation.is_self
+        else ("群聊" if conversation.is_group else "联系人")
+    )
     display_name = safe_filename(conversation.display_name)[:72]
     stable_id = hashlib.sha256(conversation.username.encode("utf-8")).hexdigest()[:8]
     return output_dir / category / f"{display_name} [{stable_id}]"

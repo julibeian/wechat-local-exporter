@@ -23,6 +23,7 @@ class Conversation:
     last_timestamp: int = 0
     summary: str = ""
     is_group: bool = False
+    is_self: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +49,54 @@ class PdfImage:
     source: str
     is_thumbnail: bool = False
     is_animated: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class MomentMedia:
+    """An original media reference stored in a Moments XML record."""
+
+    md5: str = ""
+    original_url: str = ""
+    thumbnail_url: str = ""
+    token: str = ""
+    thumbnail_token: str = ""
+    aes_key: str = ""
+    kind: str = "image"
+    enc_idx: str = ""
+    width: int = 0
+    height: int = 0
+    total_size: int = 0
+    month: str = ""
+    role: str = "ordinary"
+
+
+@dataclass(frozen=True, slots=True)
+class MomentMediaFile:
+    """Decrypted original Moments media ready for an offline archive."""
+
+    data: bytes
+    extension: str
+    mime_type: str
+    source: str
+    is_thumbnail: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class Moment:
+    """One Moments post visible to the currently logged-in WeChat account."""
+
+    post_id: str
+    username: str
+    timestamp: int
+    content: str = ""
+    media: tuple[MomentMedia, ...] = ()
+    is_pinned: bool = False
+    location: str = ""
+    visibility: str = "visible"
+
+    @property
+    def datetime(self) -> datetime:
+        return datetime.fromtimestamp(self.timestamp)
 
 
 @dataclass(frozen=True, slots=True)

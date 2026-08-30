@@ -105,6 +105,10 @@ def test_archive_merge_and_sender_calibration(tmp_path) -> None:
         conversations = archive.conversations()
         assert len(conversations) == 1
         assert conversations[0].display_name == "好友备注"
+        self_conversation = archive.self_conversation()
+        assert self_conversation.username == SELF
+        assert self_conversation.is_self
+        assert self_conversation.display_name == "我自己（本人）"
         samples = archive.calibration_samples(conversations[0], limit_per_sender=1)
         assert {(sample.source_db, sample.sender_id) for sample in samples} == {
             ("message\\message_1.db", 1),

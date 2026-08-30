@@ -27,6 +27,19 @@ TYPE_LABELS = {
     25769803825: "[文件]",
 }
 
+_CHAT_HISTORY_ITEM_LABELS = {
+    1: "[文本]",
+    2: "[图片]",
+    3: "[语音]",
+    4: "[视频]",
+    5: "[链接]",
+    6: "[位置]",
+    7: "[音乐]",
+    8: "[文件]",
+    14: "[聊天记录]",
+    16: "[小程序]",
+}
+
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 WECHAT_VOICE_TEXT_PREFIX = "[微信语音转文字] "
 
@@ -93,7 +106,11 @@ def parse_message_text(local_type: int, raw_content: str) -> str:
     if local_type == 48:
         label = _first_xml_value(content, ("label", "poiname"))
         return f"[位置] {label}".strip()
-    if local_type in (49, 244813135921, 81604378673, 154618822705):
+    if local_type == 244813135921:
+        return _parse_quoted_message(content)
+    if local_type == 81604378673:
+        return _parse_chat_history(content)
+    if local_type in (49, 154618822705):
         title = _first_xml_value(content, ("title", "filename", "des", "displayname"))
         label = TYPE_LABELS.get(local_type, "[链接/文件]")
         return f"{label} {title}".strip()
@@ -116,6 +133,208 @@ def split_group_sender(content: str) -> tuple[str, str]:
     if re.fullmatch(r"(?:wxid_[A-Za-z0-9_-]+|[A-Za-z0-9_-]+@openim)", possible_sender):
         return possible_sender, text
     return "", content
+
+
+def _parse_quoted_message(content: str) -> str:
+    """Render both the reply text and the original message embedded by WeChat."""
+    title = _first_xml_value(content, ("title",))
+    heading = f"[引用消息] {title}".strip()
+    root = _parse_xml(content)
+    if root is None:
+        return heading
+    refermsg = _find_xml_node(root, "refermsg")
+    if refermsg is None:
+        return heading
+
+    sender = _child_xml_value(refermsg, ("displayname", "sourcename", "fromusr"))
+    raw_type = _child_xml_value(refermsg, ("type",))
+    try:
+        referenced_type = int(raw_type)
+    except ValueError:
+        referenced_type = 0
+    referenced_content = _xml_node_content(_find_xml_node(refermsg, "content"))
+    quoted = _parse_referenced_content(referenced_type, referenced_content)
+    if not quoted:
+        quoted = TYPE_LABELS.get(referenced_type, "[原消息内容不可用]")
+    label = f"引用原文（{sender}）" if sender else "引用原文"
+    return f"{heading}\n{label}：{quoted}"
+
+
+def _parse_referenced_content(message_type: int, content: str) -> str:
+    if not content:
+        return TYPE_LABELS.get(message_type, "")
+    if message_type == 49:
+        app_type = _first_xml_value(content, ("type",))
+        try:
+            subtype = int(app_type)
+        except ValueError:
+            subtype = 0
+        if subtype == 19:
+            return _parse_chat_history(content)
+        if subtype == 57:
+            return _parse_quoted_message(content)
+    return parse_message_text(message_type, content)
+
+
+def _parse_chat_history(content: str) -> str:
+    """Expand a combined-forward ChatHistory payload into searchable lines."""
+    outer_root = _parse_xml(content)
+    outer_title = _first_xml_value(content, ("title",))
+    record_root = _record_info_root(outer_root)
+    record_title = _child_xml_value(record_root, ("title",)) if record_root is not None else ""
+    heading_title = outer_title or record_title
+    heading = f"[聊天记录] {heading_title}".strip()
+    if record_root is None:
+        summary = _first_xml_value(content, ("des", "info"))
+        return f"{heading}\n{summary}" if summary and summary != heading_title else heading
+
+    lines = [heading]
+    for item in _record_data_items(record_root):
+        rendered = _render_chat_history_item(item)
+        if rendered:
+            lines.append(rendered)
+    if len(lines) == 1:
+        summary = _child_xml_value(record_root, ("desc", "info"))
+        if summary and summary != heading_title:
+            lines.append(summary)
+    return "\n".join(lines)
+
+
+def _record_info_root(outer_root: ElementTree.Element | None) -> ElementTree.Element | None:
+    if outer_root is None:
+        return None
+    if _xml_tag(outer_root) == "recordinfo":
+        return outer_root
+    existing = _find_xml_node(outer_root, "recordinfo")
+    if existing is not None:
+        return existing
+    recorditem = _find_xml_node(outer_root, "recorditem")
+    if recorditem is None:
+        return None
+    for child in recorditem:
+        if _xml_tag(child) == "recordinfo":
+            return child
+    return _parse_xml(_xml_node_content(recorditem))
+
+
+def _render_chat_history_item(item: ElementTree.Element) -> str:
+    raw_type = item.attrib.get("datatype", "") or _child_xml_value(item, ("datatype",))
+    try:
+        item_type = int(raw_type)
+    except ValueError:
+        item_type = 0
+    sender = _child_xml_value(item, ("sourcename", "displayname"))
+    source_time = _child_xml_value(item, ("sourcetime",))
+    description = _child_xml_value(item, ("datadesc",))
+    title = _child_xml_value(item, ("datatitle",))
+
+    if item_type == 1:
+        body = description or title or "[文本]"
+    elif item_type == 6:
+        location = _child_xml_value(item, ("label", "poiname"))
+        body = _labeled_item("[位置]", location or title or description)
+    elif item_type == 14:
+        nested = _find_xml_node(item, "recordinfo")
+        if nested is None:
+            nested_node = _find_xml_node(item, "recordxml")
+            if nested_node is None:
+                nested_node = _find_xml_node(item, "recorditem")
+            nested = _parse_xml(_xml_node_content(nested_node))
+        body = _render_record_info(nested) if nested is not None else "[聊天记录]"
+    else:
+        label = _CHAT_HISTORY_ITEM_LABELS.get(item_type, f"[消息类型 {item_type}]" if item_type else "[消息]")
+        detail = title or description
+        if item_type == 8 and not detail:
+            detail = _child_xml_value(item, ("datafmt",))
+        body = _labeled_item(label, detail)
+
+    prefix_parts = []
+    if source_time:
+        prefix_parts.append(f"[{source_time}]")
+    if sender:
+        prefix_parts.append(f"{sender}：")
+    prefix = " ".join(prefix_parts)
+    if not prefix:
+        return body
+    body_lines = body.splitlines() or [""]
+    first = f"{prefix} {body_lines[0]}".rstrip()
+    return "\n".join([first, *(f"    {line}" for line in body_lines[1:])])
+
+
+def _render_record_info(root: ElementTree.Element) -> str:
+    title = _child_xml_value(root, ("title",))
+    heading = f"[聊天记录] {title}".strip()
+    lines = [heading]
+    for item in _record_data_items(root):
+        rendered = _render_chat_history_item(item)
+        if rendered:
+            lines.append(rendered)
+    return "\n".join(lines)
+
+
+def _record_data_items(root: ElementTree.Element) -> list[ElementTree.Element]:
+    """Return only this record's items, leaving nested records to their parent item."""
+    datalist = _find_xml_node(root, "datalist")
+    if datalist is None:
+        return []
+    return [child for child in datalist if _xml_tag(child) == "dataitem"]
+
+
+def _labeled_item(label: str, detail: str) -> str:
+    if not detail or detail == label:
+        return label
+    return f"{label} {detail}"
+
+
+def _parse_xml(content: str) -> ElementTree.Element | None:
+    if not content:
+        return None
+    normalized = content.replace("\x00", "").strip()
+    for candidate in (normalized, html.unescape(normalized)):
+        try:
+            return ElementTree.fromstring(candidate)
+        except ElementTree.ParseError:
+            continue
+    return None
+
+
+def _xml_tag(node: ElementTree.Element) -> str:
+    return str(node.tag).rsplit("}", 1)[-1].lower()
+
+
+def _find_xml_node(
+    root: ElementTree.Element | None, name: str
+) -> ElementTree.Element | None:
+    if root is None:
+        return None
+    expected = name.lower()
+    for node in root.iter():
+        if _xml_tag(node) == expected:
+            return node
+    return None
+
+
+def _child_xml_value(root: ElementTree.Element | None, names: tuple[str, ...]) -> str:
+    if root is None:
+        return ""
+    expected = {name.lower() for name in names}
+    for node in root.iter():
+        if node is root or _xml_tag(node) not in expected:
+            continue
+        value = _xml_node_content(node)
+        if value:
+            return _clean_text(html.unescape(value))
+    return ""
+
+
+def _xml_node_content(node: ElementTree.Element | None) -> str:
+    if node is None:
+        return ""
+    if len(node) == 0:
+        return (node.text or "").strip()
+    values = [node.text or ""]
+    values.extend(ElementTree.tostring(child, encoding="unicode") for child in node)
+    return "".join(values).strip()
 
 
 def _first_xml_value(content: str, names: tuple[str, ...]) -> str:

@@ -11,6 +11,7 @@ from wechat_exporter.gui import (
     _conversation_matches_filters,
     _date_range_timestamps,
     _format_date_range,
+    _moments_export_eligibility,
 )
 from wechat_exporter.windows import select_current_account
 
@@ -62,6 +63,18 @@ def test_conversation_type_dropdown_filters_categories_and_search() -> None:
     )
     assert _conversation_matches_filters(contact, query="", type_filter="all")
     assert _conversation_matches_filters(group, query="", type_filter="all")
+
+
+def test_moments_export_requires_one_personal_contact_only() -> None:
+    contact = Conversation("wxid_friend", "朋友")
+    self_contact = Conversation("wxid_self", "我自己", is_self=True)
+    group = Conversation("study@chatroom", "学习群", is_group=True)
+
+    assert _moments_export_eligibility((contact,)) == (True, "")
+    assert _moments_export_eligibility((self_contact,)) == (True, "")
+    assert not _moments_export_eligibility(())[0]
+    assert not _moments_export_eligibility((contact, contact))[0]
+    assert not _moments_export_eligibility((group,))[0]
 
 
 class _AfterRoot:

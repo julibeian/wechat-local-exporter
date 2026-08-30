@@ -11,7 +11,8 @@ from pathlib import Path
 from .content import decode_database_content, parse_message_text, split_group_sender
 from .crypto import DecryptedWorkspace
 from .media import extract_media_reference
-from .models import AccountLocation, Conversation, ExportWorkload, Message
+from .models import AccountLocation, Conversation, ExportWorkload, Message, Moment
+from .moments import load_contact_moments
 
 
 _SYSTEM_CONVERSATION_IDS = frozenset(
@@ -114,6 +115,25 @@ class WeChatArchive:
             )
         result.sort(key=lambda item: item.last_timestamp, reverse=True)
         return result
+
+    def self_conversation(self) -> Conversation:
+        """Return a UI-only entry used to export the logged-in user's Moments."""
+        display = self.contacts.get(self.self_wxid, "").strip()
+        display_name = (
+            f"我自己（{display}）"
+            if display and display != "我自己"
+            else "我自己"
+        )
+        return Conversation(
+            username=self.self_wxid,
+            display_name=display_name,
+            summary="用于导出我自己的全部朋友圈（含私密和分组可见）",
+            is_self=True,
+        )
+
+    def contact_moments(self, conversation: Conversation) -> list[Moment]:
+        """Return all locally synced visible posts for one contact or self."""
+        return load_contact_moments(self.workspace, conversation)
 
     def calibration_samples(
         self, conversation: Conversation, limit_per_sender: int = 2
