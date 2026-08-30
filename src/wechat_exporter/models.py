@@ -79,6 +79,11 @@ class MomentMediaFile:
     mime_type: str
     source: str
     is_thumbnail: bool = False
+    is_animated: bool = False
+    fallback_data: bytes = b""
+    fallback_extension: str = ""
+    fallback_mime_type: str = ""
+    fallback_source: str = ""
 
 
 @dataclass(frozen=True, slots=True)

@@ -7,6 +7,7 @@ import queue
 import threading
 import time as clock
 import tkinter as tk
+import unicodedata
 import webbrowser
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -18,7 +19,12 @@ from .history import ExportHistoryEntry, append_export_history, load_export_hist
 from .integrity import require_signature_integrity
 from .key_capture import KeyCapturePreparation, prepare_key_capture
 from .models import AccountLocation, Conversation, ExportRequest, ExportWorkload
-from .service import ExporterService, estimate_export_seconds, format_duration
+from .service import (
+    ExporterService,
+    estimate_export_seconds,
+    estimate_moments_export_seconds,
+    format_duration,
+)
 from .windows import (
     discover_accounts,
     find_weixin_executable,
@@ -30,6 +36,8 @@ from .windows import (
 
 
 STAR_PROMPT_DELAY_SECONDS = 60.0
+HISTORY_DIALOG_SIZE = (1380, 760)
+HISTORY_DIALOG_MIN_SIZE = (1080, 580)
 VOICE_TEXT_GUIDE_STEPS = (
     "在微信中打开含语音消息的聊天。",
     "电脑版：右键语音气泡，选择“转文字”；手机端：长按语音气泡，选择“转文字”。",
@@ -232,8 +240,10 @@ class ExportHistoryDialog(tk.Toplevel):
     def __init__(self, parent: tk.Misc):
         super().__init__(parent)
         self.title("导出历史")
-        self.geometry("1180x640")
-        self.minsize(960, 500)
+        width, height = HISTORY_DIALOG_SIZE
+        min_width, min_height = HISTORY_DIALOG_MIN_SIZE
+        self.geometry(f"{width}x{height}")
+        self.minsize(min_width, min_height)
         self.transient(parent)
         self.entries: list[ExportHistoryEntry] = []
 
@@ -272,10 +282,10 @@ class ExportHistoryDialog(tk.Toplevel):
             self.tree.heading(column, text=title)
         self.tree.column("time", width=150, stretch=False)
         self.tree.column("type", width=65, anchor="center", stretch=False)
-        self.tree.column("name", width=160)
+        self.tree.column("name", width=210)
         self.tree.column("format", width=55, anchor="center", stretch=False)
         self.tree.column("messages", width=70, anchor="e", stretch=False)
-        self.tree.column("path", width=520)
+        self.tree.column("path", width=680)
         y_scrollbar = ttk.Scrollbar(
             table_frame, orient="vertical", command=self.tree.yview
         )
@@ -542,14 +552,12 @@ class VoiceTextGuideDialog(tk.Toplevel):
         self.focus_force()
 
 
-class StarPrompt(tk.Toplevel):
-    """Small, dismissible GitHub prompt shown at most once per app run."""
+class StarPrompt(tk.Frame):
+    """Dismissible GitHub prompt rendered inside the main application."""
 
-    def __init__(self, parent: tk.Misc):
-        super().__init__(parent)
-        self.overrideredirect(True)
-        self.attributes("-topmost", True)
-        self.configure(background="#D9E2F0")
+    def __init__(self, parent: tk.Misc, *, on_close) -> None:
+        super().__init__(parent, background="#D9E2F0")
+        self._on_close = on_close
 
         card = tk.Frame(
             self,
@@ -560,38 +568,22 @@ class StarPrompt(tk.Toplevel):
             pady=8,
         )
         card.pack(fill="both", expand=True)
-        header = tk.Frame(card, background="#FFFFFF")
-        header.pack(fill="x")
         tk.Label(
-            header,
+            card,
             text="喜欢这个工具？",
             background="#FFFFFF",
             foreground="#172033",
             font=("Microsoft YaHei UI", 9, "bold"),
         ).pack(side="left")
-        tk.Button(
-            header,
-            text="×",
-            command=self.destroy,
-            relief="flat",
-            borderwidth=0,
-            background="#FFFFFF",
-            activebackground="#EEF2F7",
-            foreground="#64748B",
-            font=("Microsoft YaHei UI", 11, "bold"),
-            cursor="hand2",
-        ).pack(side="right")
         tk.Label(
             card,
             text="好用的话，欢迎点亮 Star 支持一下。",
             background="#FFFFFF",
             foreground="#526078",
             font=("Microsoft YaHei UI", 8),
-        ).pack(anchor="w", pady=(4, 6))
-        actions = tk.Frame(card, background="#FFFFFF")
-        actions.pack(fill="x")
+        ).pack(side="left", padx=(12, 18))
         tk.Button(
-            actions,
+            card,
             text="⭐ 点亮 Star",
             command=self._open_project,
             relief="flat",
@@ -605,9 +597,9 @@ class StarPrompt(tk.Toplevel):
             cursor="hand2",
         ).pack(side="left")
         tk.Button(
-            actions,
+            card,
             text="忽略",
-            command=self.destroy,
+            command=self._close,
             relief="flat",
             padx=9,
             pady=4,
@@ -618,38 +610,27 @@ class StarPrompt(tk.Toplevel):
             font=("Microsoft YaHei UI", 8),
             cursor="hand2",
         ).pack(side="left", padx=(8, 0))
-        self.bind("<Escape>", lambda _event: self.destroy())
+        tk.Button(
+            card,
+            text="×",
+            command=self._close,
+            relief="flat",
+            borderwidth=0,
+            background="#FFFFFF",
+            activebackground="#EEF2F7",
+            foreground="#64748B",
+            font=("Microsoft YaHei UI", 11, "bold"),
+            cursor="hand2",
+        ).pack(side="right")
+        self.bind("<Escape>", lambda _event: self._close())
 
-        self.update_idletasks()
-        width = self.winfo_width()
-        height = self.winfo_height()
-        self._target_x = max(12, self.winfo_screenwidth() - width - 18)
-        self._target_y = max(12, self.winfo_screenheight() - height - 72)
-        self._start_x = self.winfo_screenwidth() + 6
-        self._animation_step = 0
-        self.geometry(f"+{self._start_x}+{self._target_y}")
-        self.after(10, self._animate_in)
-        self.after(2500, self._release_topmost)
-
-    def _animate_in(self) -> None:
-        if not self.winfo_exists():
-            return
-        frames = 16
-        self._animation_step += 1
-        progress = min(1.0, self._animation_step / frames)
-        eased = 1.0 - (1.0 - progress) ** 3
-        x = round(self._start_x + (self._target_x - self._start_x) * eased)
-        self.geometry(f"+{x}+{self._target_y}")
-        if progress < 1.0:
-            self.after(16, self._animate_in)
-
-    def _release_topmost(self) -> None:
-        if self.winfo_exists():
-            self.attributes("-topmost", False)
+    def _close(self) -> None:
+        self.destroy()
+        self._on_close()
 
     def _open_project(self) -> None:
         webbrowser.open_new_tab(PROJECT_URL)
-        self.destroy()
+        self._close()
 
 
 class ExporterApp:
@@ -664,6 +645,7 @@ class ExporterApp:
         self.capture_preparation: KeyCapturePreparation | None = None
         self.conversations: list[Conversation] = []
         self.visible_conversations: list[Conversation] = []
+        self._conversation_by_iid: dict[str, Conversation] = {}
         self.login_prompted = False
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self._estimate_generation = 0
@@ -671,6 +653,9 @@ class ExporterApp:
         self._estimate_cache: dict[
             tuple[tuple[str, ...], int, int], ExportWorkload
         ] = {}
+        self._moments_estimate_generation = 0
+        self._moments_estimate_after_id: str | None = None
+        self._moments_estimate_cache: dict[str, tuple[int, int]] = {}
         self._export_started_at: float | None = None
         self._latest_export_status = ""
         self._worker_active = False
@@ -688,6 +673,7 @@ class ExporterApp:
         self.pdf_var = tk.BooleanVar(value=True)
         self.pdf_images_var = tk.BooleanVar(value=False)
         self.estimate_var = tk.StringVar(value="选择会话后自动估算")
+        self.moments_estimate_var = tk.StringVar(value="单选联系人后自动估算")
         self.status_var = tk.StringVar(value="准备就绪")
         self.version_var = tk.StringVar(value="微信版本：检测中...")
 
@@ -710,6 +696,7 @@ class ExporterApp:
 
     def _build_ui(self) -> None:
         outer = ttk.Frame(self.root, padding=16)
+        self.outer = outer
         outer.pack(fill="both", expand=True)
 
         title = ttk.Label(
@@ -730,7 +717,10 @@ class ExporterApp:
             foreground="#315C91",
         ).pack(anchor="w", pady=(3, 12))
 
+        self.star_prompt_host = ttk.Frame(outer)
+
         source = ttk.LabelFrame(outer, text="1. 连接微信", padding=10)
+        self.source_frame = source
         source.pack(fill="x")
         source.columnconfigure(1, weight=1)
         ttk.Label(source, textvariable=self.version_var).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
@@ -787,6 +777,12 @@ class ExporterApp:
         self.tree.column("summary", width=500, anchor="w")
         scrollbar = ttk.Scrollbar(sessions_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
+        self.tree.tag_configure(
+            "section",
+            background="#E8EEF8",
+            foreground="#2457A7",
+            font=("Microsoft YaHei UI", 10, "bold"),
+        )
         self.tree.grid(row=1, column=0, sticky="nsew")
         scrollbar.grid(row=1, column=1, sticky="ns")
         self.tree.bind(
@@ -843,7 +839,7 @@ class ExporterApp:
             padx=4,
             pady=1,
         ).pack(side="left", padx=(4, 0))
-        ttk.Label(export, text="预计耗时").grid(
+        ttk.Label(export, text="聊天预计耗时").grid(
             row=3, column=0, sticky="w", pady=(7, 0)
         )
         ttk.Label(
@@ -852,9 +848,18 @@ class ExporterApp:
             foreground="#2457A7",
             font=("Microsoft YaHei UI", 9, "bold"),
         ).grid(row=3, column=1, columnspan=2, sticky="w", pady=(7, 0))
-        ttk.Label(export, text="导出模式").grid(row=4, column=0, sticky="w", pady=(7, 0))
+        ttk.Label(export, text="朋友圈预计耗时").grid(
+            row=4, column=0, sticky="w", pady=(7, 0)
+        )
+        ttk.Label(
+            export,
+            textvariable=self.moments_estimate_var,
+            foreground="#1C6B48",
+            font=("Microsoft YaHei UI", 9, "bold"),
+        ).grid(row=4, column=1, columnspan=2, sticky="w", pady=(7, 0))
+        ttk.Label(export, text="导出模式").grid(row=5, column=0, sticky="w", pady=(7, 0))
         mode_row = ttk.Frame(export)
-        mode_row.grid(row=4, column=1, columnspan=2, sticky="w", pady=(5, 0))
+        mode_row.grid(row=5, column=1, columnspan=2, sticky="w", pady=(5, 0))
         self.quick_mode_button = ttk.Radiobutton(
             mode_row,
             text="快速（默认）",
@@ -875,13 +880,13 @@ class ExporterApp:
             foreground="#6A7280",
             wraplength=790,
             justify="left",
-        ).grid(row=5, column=1, columnspan=2, sticky="w", pady=(3, 0))
+        ).grid(row=6, column=1, columnspan=2, sticky="w", pady=(3, 0))
 
         ttk.Separator(export, orient="horizontal").grid(
-            row=6, column=0, columnspan=4, sticky="ew", pady=(11, 9)
+            row=7, column=0, columnspan=4, sticky="ew", pady=(11, 9)
         )
         actions = ttk.Frame(export)
-        actions.grid(row=7, column=0, columnspan=4, sticky="ew")
+        actions.grid(row=8, column=0, columnspan=4, sticky="ew")
         self.history_button = tk.Button(
             actions,
             text="◷  导出历史",
@@ -971,7 +976,11 @@ class ExporterApp:
         self._sync_moments_button_state()
 
     def _selection_changed(self) -> None:
+        for item_id in self.tree.selection():
+            if item_id not in self._conversation_by_iid:
+                self.tree.selection_remove(item_id)
         self._schedule_estimate()
+        self._schedule_moments_estimate()
         self._sync_moments_button_state()
 
     def _sync_moments_button_state(self) -> None:
@@ -1006,7 +1015,20 @@ class ExporterApp:
         if self._star_prompt_shown or not self.root.winfo_exists():
             return
         self._star_prompt_shown = True
-        StarPrompt(self.root)
+        for child in self.star_prompt_host.winfo_children():
+            child.destroy()
+        StarPrompt(
+            self.star_prompt_host,
+            on_close=self._hide_star_prompt,
+        ).pack(fill="x")
+        self.star_prompt_host.pack(
+            fill="x",
+            pady=(0, 9),
+            before=self.source_frame,
+        )
+
+    def _hide_star_prompt(self) -> None:
+        self.star_prompt_host.pack_forget()
 
     def _choose_date_range(self) -> None:
         start_value = date.fromisoformat(self.start_var.get()) if self.start_var.get() else None
@@ -1118,7 +1140,7 @@ class ExporterApp:
 
     def _filter_conversations(self) -> None:
         query = self.search_var.get().strip().lower()
-        self.visible_conversations = [
+        filtered = [
             item
             for item in self.conversations
             if _conversation_matches_filters(
@@ -1127,40 +1149,60 @@ class ExporterApp:
                 type_filter=self.conversation_type_var.get(),
             )
         ]
+        grouped = _group_conversations(filtered)
+        self.visible_conversations = [
+            conversation
+            for _section, conversations in grouped
+            for conversation in conversations
+        ]
+        self._conversation_by_iid.clear()
         for item in self.tree.get_children():
             self.tree.delete(item)
-        for index, conversation in enumerate(self.visible_conversations):
-            last = (
-                datetime.fromtimestamp(conversation.last_timestamp).strftime("%Y-%m-%d %H:%M")
-                if conversation.last_timestamp
-                else ""
-            )
+        row_index = 0
+        for section, conversations in grouped:
             self.tree.insert(
                 "",
                 "end",
-                iid=str(index),
-                values=(
-                    (
-                        "本人"
-                        if conversation.is_self
-                        else ("群聊" if conversation.is_group else "联系人")
-                    ),
-                    conversation.display_name,
-                    last,
-                    conversation.summary.replace("\n", " "),
-                ),
+                iid=f"section:{section}",
+                values=("", section, "", ""),
+                tags=("section",),
             )
+            for conversation in conversations:
+                last = (
+                    datetime.fromtimestamp(conversation.last_timestamp).strftime(
+                        "%Y-%m-%d %H:%M"
+                    )
+                    if conversation.last_timestamp
+                    else ""
+                )
+                item_id = f"conversation:{row_index}"
+                row_index += 1
+                self._conversation_by_iid[item_id] = conversation
+                self.tree.insert(
+                    "",
+                    "end",
+                    iid=item_id,
+                    values=(
+                        (
+                            "本人"
+                            if conversation.is_self
+                            else ("群聊" if conversation.is_group else "联系人")
+                        ),
+                        conversation.display_name,
+                        last,
+                        conversation.summary.replace("\n", " "),
+                    ),
+                )
         self._schedule_estimate()
+        self._schedule_moments_estimate()
         self._sync_moments_button_state()
 
     def _selected_conversations(self) -> tuple[Conversation, ...]:
-        selected = []
-        for item_id in self.tree.selection():
-            try:
-                selected.append(self.visible_conversations[int(item_id)])
-            except (ValueError, IndexError):
-                continue
-        return tuple(selected)
+        return tuple(
+            self._conversation_by_iid[item_id]
+            for item_id in self.tree.selection()
+            if item_id in self._conversation_by_iid
+        )
 
     def _schedule_estimate(self) -> None:
         self._estimate_generation += 1
@@ -1174,13 +1216,13 @@ class ExporterApp:
 
         conversations = self._selected_conversations()
         if not conversations:
-            self.estimate_var.set("选择会话后自动估算")
+            self.estimate_var.set("选择会话后自动估算聊天导出时间")
             return
         if any(conversation.is_self for conversation in conversations):
-            self.estimate_var.set("“我自己”仅用于朋友圈归档，请点击绿色朋友圈按钮")
+            self.estimate_var.set("“我自己”不导出聊天，请查看下方朋友圈预计耗时")
             return
         if not self.service or not self.service.archive:
-            self.estimate_var.set("连接微信后自动估算")
+            self.estimate_var.set("连接微信后自动估算聊天导出时间")
             return
         try:
             start_timestamp, end_timestamp = self._parse_dates()
@@ -1197,7 +1239,7 @@ class ExporterApp:
             self._show_estimate(cached, len(conversations))
             return
 
-        self.estimate_var.set("正在快速统计消息、图片和表情...")
+        self.estimate_var.set("正在统计聊天消息、图片和表情...")
         self._estimate_after_id = self.root.after(
             120,
             lambda: self._start_estimate(
@@ -1247,10 +1289,10 @@ class ExporterApp:
         conversation_count: int,
     ) -> None:
         if not self.txt_var.get() and not self.pdf_var.get():
-            self.estimate_var.set("请先勾选 TXT 或 PDF")
+            self.estimate_var.set("聊天导出：请先勾选 TXT 或 PDF")
             return
         if workload.message_count <= 0:
-            self.estimate_var.set("当前会话和日期范围内没有消息")
+            self.estimate_var.set("聊天导出：当前会话和日期范围内没有消息")
             return
         lower, upper = estimate_export_seconds(
             workload,
@@ -1268,6 +1310,78 @@ class ExporterApp:
             f"约 {format_duration(lower)}–{format_duration(upper)} · "
             f"{workload.message_count:,} 条 · 图片 {workload.image_count:,} · "
             f"表情 {workload.emoticon_count:,}{media_note}"
+        )
+
+    def _schedule_moments_estimate(self) -> None:
+        self._moments_estimate_generation += 1
+        generation = self._moments_estimate_generation
+        if self._moments_estimate_after_id is not None:
+            try:
+                self.root.after_cancel(self._moments_estimate_after_id)
+            except tk.TclError:
+                pass
+            self._moments_estimate_after_id = None
+
+        conversations = self._selected_conversations()
+        eligible, _reason = _moments_export_eligibility(conversations)
+        if not eligible:
+            self.moments_estimate_var.set("单选一个联系人或“我自己”后自动估算")
+            return
+        if not self.service or not self.service.archive:
+            self.moments_estimate_var.set("连接微信后自动估算朋友圈归档时间")
+            return
+        conversation = conversations[0]
+        cached = self._moments_estimate_cache.get(conversation.username)
+        if cached is not None:
+            self._show_moments_estimate(*cached)
+            return
+
+        self.moments_estimate_var.set("正在统计朋友圈条目和媒体...")
+        self._moments_estimate_after_id = self.root.after(
+            120,
+            lambda: self._start_moments_estimate(generation, conversation),
+        )
+
+    def _start_moments_estimate(
+        self,
+        generation: int,
+        conversation: Conversation,
+    ) -> None:
+        self._moments_estimate_after_id = None
+        archive = self.service.archive if self.service else None
+        if archive is None:
+            return
+
+        def count_moments() -> None:
+            try:
+                moments = archive.contact_moments(conversation)
+                media_count = sum(len(moment.media) for moment in moments)
+                self.events.put(
+                    (
+                        "moments-estimate:ok",
+                        (generation, conversation.username, len(moments), media_count),
+                    )
+                )
+            except BaseException as error:
+                self.events.put(("moments-estimate:error", (generation, error)))
+
+        threading.Thread(
+            target=count_moments,
+            name="wechat-moments-estimate",
+            daemon=True,
+        ).start()
+
+    def _show_moments_estimate(self, post_count: int, media_count: int) -> None:
+        if post_count <= 0:
+            self.moments_estimate_var.set("朋友圈归档：本机暂未找到该联系人的动态")
+            return
+        lower, upper = estimate_moments_export_seconds(
+            post_count=post_count,
+            media_count=media_count,
+        )
+        self.moments_estimate_var.set(
+            f"约 {format_duration(lower)}–{format_duration(upper)} · "
+            f"{post_count:,} 条 · 媒体 {media_count:,} 个 · 受本机缓存/CDN影响"
         )
 
     def _export_clicked(self) -> None:
@@ -1305,9 +1419,9 @@ class ExporterApp:
             end_timestamp=end,
         )
         self._export_started_at = clock.perf_counter()
-        self._latest_export_status = "准备导出 0%"
+        self._latest_export_status = "准备导出聊天 0%"
         self.progress["value"] = 0
-        self.status_var.set("准备导出 0% · 已用 0 秒")
+        self.status_var.set("准备导出聊天 0% · 已用 0 秒")
         self._run_worker("export", lambda: self.service.export(request, progress=self._progress_callback))
 
     def _export_moments_clicked(self) -> None:
@@ -1397,7 +1511,19 @@ class ExporterApp:
                 elif kind == "estimate:error":
                     generation, _error = payload
                     if int(generation) == self._estimate_generation:
-                        self.estimate_var.set("暂时无法估算；仍可正常导出")
+                        self.estimate_var.set("聊天导出暂时无法估算；仍可正常导出")
+                elif kind == "moments-estimate:ok":
+                    generation, username, post_count, media_count = payload
+                    if int(generation) == self._moments_estimate_generation:
+                        counts = (int(post_count), int(media_count))
+                        self._moments_estimate_cache[str(username)] = counts
+                        self._show_moments_estimate(*counts)
+                elif kind == "moments-estimate:error":
+                    generation, _error = payload
+                    if int(generation) == self._moments_estimate_generation:
+                        self.moments_estimate_var.set(
+                            "朋友圈归档暂时无法估算；仍可正常导出"
+                        )
                 elif kind == "detect:ok":
                     version, accounts, executable, preparation = payload
                     self.wechat_executable = executable
@@ -1425,6 +1551,7 @@ class ExporterApp:
                     self.connect_button.configure(text="重新连接微信", state="normal")
                     self.conversations = list(payload)
                     self._estimate_cache.clear()
+                    self._moments_estimate_cache.clear()
                     self._filter_conversations()
                     self.export_button.configure(state="normal")
                     self._sync_moments_button_state()
@@ -1494,9 +1621,105 @@ class ExporterApp:
                 self.root.after_cancel(self._star_prompt_after_id)
             except tk.TclError:
                 pass
+        if self._moments_estimate_after_id is not None:
+            try:
+                self.root.after_cancel(self._moments_estimate_after_id)
+            except tk.TclError:
+                pass
         if self.service:
             self.service.close()
         self.root.destroy()
+
+
+_PINYIN_INITIAL_BOUNDARIES = (
+    (-20319, "A"),
+    (-20284, "B"),
+    (-19776, "C"),
+    (-19219, "D"),
+    (-18711, "E"),
+    (-18527, "F"),
+    (-18240, "G"),
+    (-17923, "H"),
+    (-17418, "J"),
+    (-16475, "K"),
+    (-16213, "L"),
+    (-15641, "M"),
+    (-15166, "N"),
+    (-14923, "O"),
+    (-14915, "P"),
+    (-14631, "Q"),
+    (-14150, "R"),
+    (-14091, "S"),
+    (-13319, "T"),
+    (-12839, "W"),
+    (-12557, "X"),
+    (-11848, "Y"),
+    (-11056, "Z"),
+)
+
+
+def _character_initial(character: str) -> str:
+    normalized = unicodedata.normalize("NFKD", character)
+    for candidate in normalized:
+        if "A" <= candidate.upper() <= "Z":
+            return candidate.upper()
+    try:
+        encoded = character.encode("gbk")
+    except UnicodeEncodeError:
+        return "#"
+    if len(encoded) != 2:
+        return "#"
+    code = encoded[0] * 256 + encoded[1] - 65536
+    for boundary, initial in reversed(_PINYIN_INITIAL_BOUNDARIES):
+        if code >= boundary:
+            return initial
+    return "#"
+
+
+def _name_initials(value: str) -> str:
+    initials = []
+    for character in value.strip():
+        if character.isspace() or unicodedata.category(character).startswith("P"):
+            continue
+        initial = _character_initial(character)
+        initials.append(initial)
+    return "".join(initials) or "#"
+
+
+def _conversation_section(conversation: Conversation) -> str:
+    if conversation.is_self:
+        return "★ 本人"
+    initial = _name_initials(conversation.display_name)[:1]
+    return initial if "A" <= initial <= "Z" else "#"
+
+
+def _group_conversations(
+    conversations: list[Conversation],
+) -> list[tuple[str, list[Conversation]]]:
+    grouped: dict[str, list[Conversation]] = {}
+    for conversation in conversations:
+        grouped.setdefault(_conversation_section(conversation), []).append(conversation)
+    section_order = {letter: index for index, letter in enumerate("ABCDEFGHIJKLMNOPQRSTUVWXYZ")}
+
+    def section_key(section: str) -> tuple[int, int]:
+        if section == "★ 本人":
+            return (0, 0)
+        if section in section_order:
+            return (1, section_order[section])
+        return (2, 0)
+
+    result: list[tuple[str, list[Conversation]]] = []
+    for section in sorted(grouped, key=section_key):
+        values = sorted(
+            grouped[section],
+            key=lambda item: (
+                _name_initials(item.display_name),
+                item.display_name.casefold(),
+                item.username.casefold(),
+            ),
+        )
+        result.append((section, values))
+    return result
 
 
 def _conversation_matches_filters(

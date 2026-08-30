@@ -7,8 +7,13 @@ from pathlib import Path
 from wechat_exporter.models import AccountLocation, Conversation
 from wechat_exporter.gui import (
     ExporterApp,
+    HISTORY_DIALOG_MIN_SIZE,
+    HISTORY_DIALOG_SIZE,
     STAR_PROMPT_DELAY_SECONDS,
+    StarPrompt,
     _conversation_matches_filters,
+    _group_conversations,
+    _name_initials,
     _date_range_timestamps,
     _format_date_range,
     _moments_export_eligibility,
@@ -63,6 +68,28 @@ def test_conversation_type_dropdown_filters_categories_and_search() -> None:
     )
     assert _conversation_matches_filters(contact, query="", type_filter="all")
     assert _conversation_matches_filters(group, query="", type_filter="all")
+
+
+def test_conversations_are_grouped_by_latin_and_pinyin_initials() -> None:
+    conversations = [
+        Conversation("wxid_zhang", "张三"),
+        Conversation("wxid_alice", "Alice"),
+        Conversation("study@chatroom", "学习群", is_group=True),
+        Conversation("wxid_an", "安安"),
+        Conversation("wxid_self", "我自己", is_self=True),
+    ]
+
+    grouped = _group_conversations(conversations)
+
+    assert [section for section, _items in grouped] == ["★ 本人", "A", "X", "Z"]
+    assert [item.display_name for item in grouped[1][1]] == ["安安", "Alice"]
+    assert _name_initials("吕新颜") == "LXY"
+
+
+def test_star_prompt_is_embedded_and_history_dialog_is_larger() -> None:
+    assert issubclass(StarPrompt, __import__("tkinter").Frame)
+    assert HISTORY_DIALOG_SIZE == (1380, 760)
+    assert HISTORY_DIALOG_MIN_SIZE == (1080, 580)
 
 
 def test_moments_export_requires_one_personal_contact_only() -> None:

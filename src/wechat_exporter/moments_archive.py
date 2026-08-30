@@ -23,6 +23,7 @@ class MomentsArchiveWriter:
         self.image_count = 0
         self.video_count = 0
         self.missing_count = 0
+        self.fallback_count = 0
 
     def write(
         self,
@@ -44,6 +45,7 @@ class MomentsArchiveWriter:
         )
         post_id = _safe_component(moment.post_id) or f"post-{post_number}"
         media_items: list[dict[str, object]] = []
+        static_main_path = ""
 
         for media_index, (reference, resolved) in enumerate(
             resolved_media, start=1
@@ -63,8 +65,24 @@ class MomentsArchiveWriter:
                 "declared_size": reference.total_size,
             }
             if resolved is None:
-                item.update({"status": "missing", "path": None})
-                self.missing_count += 1
+                if (
+                    reference.kind == "video"
+                    and reference.role == "live_photo_video"
+                    and static_main_path
+                ):
+                    item.update(
+                        {
+                            "status": "fallback",
+                            "path": None,
+                            "fallback_path": static_main_path,
+                            "fallback_source": "实况照片自带的静态主图",
+                            "fallback_reason": "动态媒体不可用，展示停止画面",
+                        }
+                    )
+                    self.fallback_count += 1
+                else:
+                    item.update({"status": "missing", "path": None})
+                    self.missing_count += 1
                 media_items.append(item)
                 continue
 
@@ -79,6 +97,27 @@ class MomentsArchiveWriter:
             target.write_bytes(resolved.data)
             relative = target.relative_to(self.root).as_posix()
             digest = hashlib.sha256(resolved.data).hexdigest()
+            generated_fallback_path = ""
+            if resolved.fallback_data and resolved.fallback_extension:
+                fallback_filename = (
+                    f"{post_number:04d}_{post_id}_{media_index:02d}_"
+                    f"stopped-frame.{resolved.fallback_extension}"
+                )
+                fallback_target = date_dir / fallback_filename
+                fallback_target.write_bytes(resolved.fallback_data)
+                generated_fallback_path = fallback_target.relative_to(
+                    self.root
+                ).as_posix()
+            fallback_path = (
+                static_main_path
+                if reference.kind == "video" and static_main_path
+                else generated_fallback_path
+            )
+            fallback_source = (
+                "实况照片自带的静态主图"
+                if reference.kind == "video" and static_main_path
+                else resolved.fallback_source
+            )
             item.update(
                 {
                     "status": "ok",
@@ -88,6 +127,9 @@ class MomentsArchiveWriter:
                     "sha256": digest,
                     "source": resolved.source,
                     "is_thumbnail": resolved.is_thumbnail,
+                    "is_animated": resolved.is_animated,
+                    "fallback_path": fallback_path or None,
+                    "fallback_source": fallback_source or None,
                 }
             )
             self.media_count += 1
@@ -95,6 +137,7 @@ class MomentsArchiveWriter:
                 self.video_count += 1
             else:
                 self.image_count += 1
+                static_main_path = generated_fallback_path or relative
             media_items.append(item)
 
         self.posts.append(
@@ -137,6 +180,7 @@ class MomentsArchiveWriter:
                 "images": self.image_count,
                 "videos": self.video_count,
                 "media_missing": self.missing_count,
+                "media_fallbacks": self.fallback_count,
                 "visibility": visibility_counts,
             },
             "posts": self.posts,
@@ -186,6 +230,8 @@ class MomentsArchiveWriter:
         )
         if self.missing_count:
             summary += f" · {self.missing_count} 个媒体缺失"
+        if self.fallback_count:
+            summary += f" · {self.fallback_count} 个动图使用静态主图"
         body = "\n".join(sections) or '<p class="empty">没有可显示的动态。</p>'
         return f"""<!doctype html>
 <html lang="zh-CN">
@@ -214,6 +260,8 @@ main {{ width:min(1040px,calc(100% - 28px)); margin:26px auto 70px; }}
 .media img,.media video {{ display:block; width:100%; max-height:76vh; object-fit:contain; background:#111; }}
 .media a {{ display:block; }}
 .media-label {{ position:absolute; left:8px; bottom:8px; padding:3px 8px; border-radius:7px; color:#fff; background:rgba(0,0,0,.68); font-size:12px; pointer-events:none; }}
+.fallback-note {{ padding:7px 10px; color:#5f5631; background:#fff8d9; font-size:12px; text-align:center; }}
+.video-open {{ display:block; padding:7px 10px; color:#d8ebff; background:#203040; font-size:12px; text-align:center; }}
 .missing {{ padding:28px 14px; color:#8a4b35; background:#fff4ed; text-align:center; }}
 .footer {{ margin-top:30px; color:var(--muted); font-size:13px; text-align:center; }}
 .empty {{ padding:30px; text-align:center; color:var(--muted); }}
@@ -227,6 +275,27 @@ main {{ width:min(1040px,calc(100% - 28px)); margin:26px auto 70px; }}
 {body}
 <p class="footer">生成时间：{html.escape(generated_at)} · 无需联网即可阅读</p>
 </main>
+<script>
+document.querySelectorAll('video[data-fallback]').forEach(function(video) {{
+  var fallback = video.parentElement.querySelector('.playback-fallback');
+  var showFallback = function() {{
+    if (!fallback) return;
+    video.hidden = true;
+    fallback.hidden = false;
+  }};
+  video.addEventListener('error', showFallback);
+  var source = video.querySelector('source');
+  if (source) source.addEventListener('error', showFallback);
+}});
+document.querySelectorAll('img[data-fallback]').forEach(function(image) {{
+  image.addEventListener('error', function() {{
+    if (image.dataset.fallback && !image.dataset.fallbackUsed) {{
+      image.dataset.fallbackUsed = '1';
+      image.src = image.dataset.fallback;
+    }}
+  }});
+}});
+</script>
 </body>
 </html>
 """
@@ -266,6 +335,19 @@ main {{ width:min(1040px,calc(100% - 28px)); margin:26px auto 70px; }}
     @staticmethod
     def _render_media(item: dict[str, object]) -> str:
         label = html.escape(str(item["label"]))
+        fallback_path = quote(str(item.get("fallback_path") or ""), safe="/")
+        fallback_source = html.escape(str(item.get("fallback_source") or "停止画面"))
+        if item["status"] == "fallback" and fallback_path:
+            return (
+                '<div class="media">'
+                f'<a href="{fallback_path}" target="_blank" rel="noopener" '
+                'title="打开静态主图">'
+                f'<img src="{fallback_path}" loading="lazy" decoding="async" '
+                f'alt="{label}停止画面"></a>'
+                f'<span class="media-label">{label} · 静态主图兜底</span>'
+                f'<div class="fallback-note">动态媒体不可用，已显示{fallback_source}</div>'
+                "</div>"
+            )
         if item["status"] != "ok" or not item.get("path"):
             return f'<div class="media missing">{label}未能导出</div>'
         path = quote(str(item["path"]), safe="/")
@@ -273,15 +355,30 @@ main {{ width:min(1040px,calc(100% - 28px)); margin:26px auto 70px; }}
         label_html = f'<span class="media-label">{label}{thumbnail}</span>'
         if item["kind"] == "video":
             mime_type = html.escape(str(item.get("mime_type") or "video/mp4"))
+            poster = f' poster="{fallback_path}"' if fallback_path else ""
+            fallback_attr = f' data-fallback="{fallback_path}"' if fallback_path else ""
+            fallback_html = (
+                '<a class="playback-fallback" hidden '
+                f'href="{fallback_path}" target="_blank" rel="noopener">'
+                f'<img src="{fallback_path}" loading="lazy" alt="{label}停止画面">'
+                f'<div class="fallback-note">浏览器无法播放，已显示{fallback_source}</div></a>'
+                if fallback_path
+                else ""
+            )
             return (
                 '<div class="media">'
-                f'<video controls preload="metadata" playsinline><source src="{path}" '
-                f'type="{mime_type}">浏览器不支持此视频格式。</video>{label_html}</div>'
+                f'<video controls preload="metadata" playsinline{poster}{fallback_attr}>'
+                f'<source src="{path}" type="{mime_type}">浏览器不支持此视频格式。'
+                f"</video>{fallback_html}{label_html}"
+                f'<a class="video-open" href="{path}" target="_blank" rel="noopener">'
+                "无法直接播放时，可点击打开原动态媒体</a></div>"
             )
+        fallback_attr = f' data-fallback="{fallback_path}"' if fallback_path else ""
         return (
             '<div class="media">'
             f'<a href="{path}" target="_blank" rel="noopener" title="打开原图">'
-            f'<img src="{path}" loading="lazy" decoding="async" alt="{label}"></a>'
+            f'<img src="{path}" loading="lazy" decoding="async" alt="{label}"'
+            f"{fallback_attr}></a>"
             f"{label_html}</div>"
         )
 

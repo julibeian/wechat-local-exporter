@@ -41,6 +41,21 @@ def _jpeg_bytes(size: tuple[int, int] = (1200, 800)) -> bytes:
     return stream.getvalue()
 
 
+def _gif_bytes() -> bytes:
+    stream = io.BytesIO()
+    first = Image.new("RGB", (12, 12), (220, 30, 30))
+    final = Image.new("RGB", (12, 12), (20, 40, 220))
+    first.save(
+        stream,
+        format="GIF",
+        save_all=True,
+        append_images=[final],
+        duration=[80, 600],
+        loop=0,
+    )
+    return stream.getvalue()
+
+
 def _encrypt_v2(plaintext: bytes, aes_key: bytes, xor_key: int) -> bytes:
     aes_size = min(48, len(plaintext) - 8)
     xor_size = 8
@@ -143,6 +158,58 @@ def test_moments_local_cache_image_is_decrypted_without_reencoding(tmp_path) -> 
     assert image.data == original
     assert image.source == "本机朋友圈缓存（原始字节）"
     assert not image.is_thumbnail
+
+
+def test_animated_moment_keeps_original_and_generates_final_stopped_frame(tmp_path) -> None:
+    animated = _gif_bytes()
+    resolver = MediaResolver(
+        AccountLocation(tmp_path, "self", "test"),
+        "self",
+        download=lambda _url: animated,
+        ffmpeg_executable="",
+    )
+
+    resolved = resolver.resolve_moment_file(
+        MomentMedia(original_url="https://mmbiz.qpic.cn/animated.gif")
+    )
+
+    assert resolved is not None
+    assert resolved.extension == "gif"
+    assert resolved.data == animated
+    assert resolved.is_animated
+    assert resolved.fallback_extension == "png"
+    with Image.open(io.BytesIO(resolved.fallback_data)) as stopped:
+        assert stopped.convert("RGB").getpixel((0, 0)) == (20, 40, 220)
+
+
+def test_live_video_tries_its_exact_tokenized_path_before_image_style_path(tmp_path) -> None:
+    requested: list[str] = []
+    video = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 64
+
+    def download(url: str) -> bytes:
+        requested.append(url)
+        return video
+
+    resolver = MediaResolver(
+        AccountLocation(tmp_path, "self", "test"),
+        "self",
+        download=download,
+        ffmpeg_executable="",
+    )
+    resolved = resolver.resolve_moment_file(
+        MomentMedia(
+            kind="video",
+            role="live_photo_video",
+            original_url="https://vweixinf.tc.qq.com/live/150",
+            token="video-token",
+            enc_idx="3",
+        )
+    )
+
+    assert resolved is not None
+    assert requested[0].startswith("https://vweixinf.tc.qq.com/live/150?")
+    assert "token=video-token" in requested[0]
+    assert "/0?" not in requested[0]
 
 
 def test_moments_pdf_groups_dates_and_links_to_full_image_page(tmp_path) -> None:
@@ -352,11 +419,47 @@ def test_archive_html_json_and_manifest_keep_original_media(tmp_path) -> None:
         "images": 1,
         "videos": 1,
         "media_missing": 0,
+        "media_fallbacks": 0,
         "visibility": {"当前账号可见": 1},
     }
     image_path = tmp_path / "archive" / payload["posts"][0]["media"][0]["path"]
     assert image_path.read_bytes() == jpeg
     assert len(manifest_path.read_text(encoding="utf-8").splitlines()) == 4
+
+
+def test_missing_live_video_uses_its_static_main_image_instead_of_error(tmp_path) -> None:
+    conversation = Conversation("wxid_friend", "好友")
+    image_ref = MomentMedia(kind="image", role="ordinary")
+    live_video_ref = MomentMedia(kind="video", role="live_photo_video")
+    moment = Moment(
+        post_id="live-fallback",
+        username=conversation.username,
+        timestamp=int(datetime(2026, 8, 27, 18, 30).timestamp()),
+        content="实况照片静态兜底",
+        media=(image_ref, live_video_ref),
+    )
+    writer = MomentsArchiveWriter(tmp_path / "archive", conversation)
+    writer.write(
+        moment,
+        (
+            (
+                image_ref,
+                MomentMediaFile(_jpeg_bytes(), "jpg", "image/jpeg", "CDN 原图"),
+            ),
+            (live_video_ref, None),
+        ),
+    )
+    html_path, json_path, _manifest_path = writer.finish()
+
+    rendered = html_path.read_text(encoding="utf-8")
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    video_item = payload["posts"][0]["media"][1]
+    assert video_item["status"] == "fallback"
+    assert video_item["fallback_path"] == payload["posts"][0]["media"][0]["path"]
+    assert payload["summary"]["media_fallbacks"] == 1
+    assert payload["summary"]["media_missing"] == 0
+    assert "静态主图兜底" in rendered
+    assert "实况照片视频未能导出" not in rendered
 
 
 def test_self_archive_marks_private_scope_and_uses_self_folder(tmp_path) -> None:

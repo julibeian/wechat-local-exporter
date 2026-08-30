@@ -21,6 +21,7 @@ from wechat_exporter.models import (
 from wechat_exporter.service import (
     ExporterService,
     estimate_export_seconds,
+    estimate_moments_export_seconds,
     format_duration,
 )
 
@@ -411,3 +412,16 @@ def test_export_estimate_accounts_for_selected_formats_and_media() -> None:
         include_pdf_images=False,
     ) == (0.0, 0.0)
     assert format_duration(65) == "1 分 5 秒"
+
+
+def test_moments_estimate_uses_a_separate_media_sensitive_range() -> None:
+    small = estimate_moments_export_seconds(post_count=10, media_count=5)
+    media_heavy = estimate_moments_export_seconds(post_count=10, media_count=100)
+
+    assert 0 < small[0] <= small[1]
+    assert media_heavy[0] > small[0]
+    assert media_heavy[1] > small[1]
+    assert estimate_moments_export_seconds(post_count=0, media_count=100) == (
+        0.0,
+        0.0,
+    )

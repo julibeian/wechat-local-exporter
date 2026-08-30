@@ -72,12 +72,14 @@ class MediaStats:
             f"表情图片 {self.emoticons}），缺失 {self.missing} 张。"
         )
 
-    def moments_summary(self) -> str:
+    def moments_summary(self, *, fallback_count: int = 0) -> str:
+        unavailable = max(0, self.missing - max(0, fallback_count))
         return (
             f"朋友圈媒体：已归档 {self.embedded}/{self.requested} 个"
             f"（照片 {self.moment_images}、视频 {self.moment_videos}；"
             f"微信 CDN 原文件 {self.cdn_originals}、本机缓存 {self.local_originals}、"
-            f"缩略图兜底 {self.thumbnails}），缺失 {self.missing} 个。"
+            f"缩略图兜底 {self.thumbnails}），"
+            f"静态主图兜底 {max(0, fallback_count)} 个，仍缺失 {unavailable} 个。"
         )
 
 
@@ -306,12 +308,20 @@ class MediaResolver:
         if image is None:
             return None
         extension, mime_type = _image_file_type(image.data)
+        fallback_data = (
+            _animated_final_frame_png(image.data) if image.is_animated else None
+        )
         return MomentMediaFile(
             data=image.data,
             extension=extension,
             mime_type=mime_type,
             source=image.source,
             is_thumbnail=image.is_thumbnail,
+            is_animated=image.is_animated,
+            fallback_data=fallback_data or b"",
+            fallback_extension="png" if fallback_data else "",
+            fallback_mime_type="image/png" if fallback_data else "",
+            fallback_source="动画最后停止画面" if fallback_data else "",
         )
 
     def _add_issue(self, issue: str) -> None:
@@ -441,25 +451,39 @@ class MediaResolver:
         return None
 
     def _resolve_moment_video(self, media: MomentMedia) -> MomentMediaFile | None:
-        original_url = _with_token(
+        candidates = (
+            _with_token(
+                media.original_url,
+                media.token,
+                media.enc_idx,
+                token_first=True,
+            ),
+            _with_token(
+                media.original_url,
+                media.token,
+                media.enc_idx,
+                original=True,
+                token_first=True,
+            ),
             media.original_url,
-            media.token,
-            media.enc_idx,
-            original=True,
-            token_first=True,
         )
-        if original_url:
+        tried: set[str] = set()
+        for original_url in candidates:
+            if not original_url or original_url in tried:
+                continue
+            tried.add(original_url)
             try:
                 data = self._download(original_url)
                 resolved = self._decode_video_blob(
                     data,
                     key=media.aes_key,
                     source="微信官方 CDN 原视频",
+                    generate_fallback=media.role != "live_photo_video",
                 )
                 if resolved is not None:
                     return resolved
             except (OSError, ValueError, RuntimeError):
-                pass
+                continue
 
         local = self._find_sns_video(media)
         if local is not None:
@@ -468,6 +492,7 @@ class MediaResolver:
                     local.read_bytes(),
                     key=media.aes_key,
                     source="本机朋友圈视频缓存",
+                    generate_fallback=media.role != "live_photo_video",
                 )
                 if resolved is not None:
                     return resolved
@@ -483,6 +508,7 @@ class MediaResolver:
         *,
         key: str,
         source: str,
+        generate_fallback: bool = False,
     ) -> MomentMediaFile | None:
         extension, mime_type = _video_file_type(data)
         if not extension and key:
@@ -499,11 +525,20 @@ class MediaResolver:
                     data = candidate
         if not extension:
             return None
+        fallback_data = (
+            self._video_final_frame_png(data, extension=extension)
+            if generate_fallback
+            else None
+        )
         return MomentMediaFile(
             data=data,
             extension=extension,
             mime_type=mime_type,
             source=source,
+            fallback_data=fallback_data or b"",
+            fallback_extension="png" if fallback_data else "",
+            fallback_mime_type="image/png" if fallback_data else "",
+            fallback_source="视频最后停止画面" if fallback_data else "",
         )
 
     def _download_moment_image(
@@ -750,15 +785,58 @@ class MediaResolver:
                 errors.append(error)
         raise (errors[-1] if errors else OSError("表情图片下载失败"))
 
-    def _wxgf_to_png(self, data: bytes) -> bytes | None:
-        start = data.find(b"\x00\x00\x00\x01")
-        if start < 0:
-            return None
+    def _ffmpeg_path(self) -> str | None:
         with self._ffmpeg_lock:
             if not self._ffmpeg_checked:
                 self._ffmpeg_executable = _find_ffmpeg()
                 self._ffmpeg_checked = True
-            executable = self._ffmpeg_executable
+            return self._ffmpeg_executable
+
+    def _video_final_frame_png(self, data: bytes, *, extension: str) -> bytes | None:
+        executable = self._ffmpeg_path()
+        if not executable:
+            return None
+        try:
+            with tempfile.TemporaryDirectory(prefix="wechat-moments-frame-") as temp:
+                source = Path(temp) / f"source.{extension}"
+                source.write_bytes(data)
+                command = [
+                    executable,
+                    "-v",
+                    "error",
+                    "-sseof",
+                    "-0.05",
+                    "-i",
+                    str(source),
+                    "-frames:v",
+                    "1",
+                    "-f",
+                    "image2pipe",
+                    "-vcodec",
+                    "png",
+                    "pipe:1",
+                ]
+                completed = subprocess.run(
+                    command,
+                    capture_output=True,
+                    timeout=45,
+                    check=False,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return (
+            completed.stdout
+            if completed.returncode == 0
+            and completed.stdout.startswith(b"\x89PNG\r\n\x1a\n")
+            else None
+        )
+
+    def _wxgf_to_png(self, data: bytes) -> bytes | None:
+        start = data.find(b"\x00\x00\x00\x01")
+        if start < 0:
+            return None
+        executable = self._ffmpeg_path()
         if not executable:
             return None
         command = [
@@ -918,6 +996,22 @@ def _pdf_image(data: bytes, *, source: str, is_thumbnail: bool = False) -> PdfIm
         is_thumbnail=is_thumbnail,
         is_animated=animated,
     )
+
+
+def _animated_final_frame_png(data: bytes) -> bytes | None:
+    """Render the final settled frame of an animated GIF/WebP as PNG."""
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            if not bool(getattr(image, "is_animated", False)):
+                return None
+            frame_count = int(getattr(image, "n_frames", 1))
+            image.seek(max(0, frame_count - 1))
+            frame = image.convert("RGBA")
+            output = io.BytesIO()
+            frame.save(output, format="PNG")
+            return output.getvalue()
+    except (EOFError, OSError, ValueError):
+        return None
 
 
 def _decrypt_cdn_blob(data: bytes, aes_key_hex: str) -> bytes:

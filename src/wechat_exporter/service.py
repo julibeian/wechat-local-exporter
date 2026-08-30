@@ -121,7 +121,7 @@ class ExporterService:
             raise RuntimeError("请先读取会话")
         started_at = time.perf_counter()
         if progress:
-            progress("正在统计消息数量...", 0.0)
+            progress("正在统计聊天消息数量...", 0.0)
         workload = self.archive.export_workload(
             request.conversations,
             start_timestamp=request.start_timestamp,
@@ -227,9 +227,9 @@ class ExporterService:
                             else 0.0
                         )
                         mode = (
-                            "正在导出图片 PDF"
+                            "正在导出聊天图片 PDF"
                             if request.include_pdf and request.include_pdf_images
-                            else "正在快速导出"
+                            else "正在快速导出聊天"
                         )
                         progress(
                             f"{mode} {raw_fraction * 100:.0f}% · "
@@ -268,11 +268,11 @@ class ExporterService:
             result.warnings.append(media_resolver.stats.summary())
             result.warnings.extend(sorted(media_resolver.stats.issues))
         if progress:
-            progress("正在完成文件...", 0.99)
+            progress("正在完成聊天文件...", 0.99)
         result.duration_seconds = time.perf_counter() - started_at
         if progress:
             progress(
-                f"导出 100% · {completed_messages} 条 · "
+                f"聊天导出 100% · {completed_messages} 条 · "
                 f"实际用时 {format_duration(result.duration_seconds)}",
                 1.0,
             )
@@ -364,12 +364,20 @@ class ExporterService:
             )
         requested = resolver.stats.requested
         if requested:
-            result.warnings.append(resolver.stats.moments_summary())
+            result.warnings.append(
+                resolver.stats.moments_summary(fallback_count=writer.fallback_count)
+            )
             result.warnings.extend(sorted(resolver.stats.issues))
+            if writer.fallback_count:
+                result.warnings.append(
+                    f"实况照片兜底：{writer.fallback_count} 个动态媒体未能取得，"
+                    "HTML 已优先显示对应的静态主图，不再显示为错误卡片。"
+                )
             if resolver.stats.embedded < requested:
                 result.warnings.append(
                     "媒体未全部导出：请在微信中打开该联系人的朋友圈，从最新往下滚动浏览，"
-                    "让图片和视频重新加载后再返回本工具导出。缺失项已在 HTML 和 JSON 中明确标注。"
+                    "让图片和视频重新加载后再返回本工具导出。"
+                    "有静态主图的实况照片已用停止画面兜底，其余缺失项已在 HTML 和 JSON 中明确标注。"
                 )
         result.duration_seconds = time.perf_counter() - started_at
         if progress:
@@ -424,6 +432,24 @@ def estimate_export_seconds(
         lower = likely * 0.7
         upper = likely * 1.6
     return max(0.5, lower), max(1.0, upper)
+
+
+def estimate_moments_export_seconds(
+    *,
+    post_count: int,
+    media_count: int,
+) -> tuple[float, float]:
+    """Return a broad estimate for a local Moments archive.
+
+    Database parsing is fast; the range is intentionally driven by media I/O
+    because local cache hits and WeChat CDN downloads vary substantially.
+    """
+    if post_count <= 0:
+        return 0.0, 0.0
+    fixed = 0.8 + post_count * 0.012
+    lower = fixed + max(0, media_count) * 0.22
+    upper = fixed * 1.8 + max(0, media_count) * 2.8
+    return max(1.0, lower), max(2.0, upper)
 
 
 def format_duration(seconds: float) -> str:
