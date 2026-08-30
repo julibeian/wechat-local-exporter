@@ -4,8 +4,10 @@ from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
+import errno
 import hashlib
 from pathlib import Path
+import shutil
 import tempfile
 import time
 
@@ -34,6 +36,9 @@ from .models import (
 )
 from .windows import list_wechat_processes
 from .content import WECHAT_VOICE_TEXT_PREFIX
+
+
+_DIRECTORY_PUBLISH_RETRY_DELAYS = (0.12, 0.3, 0.7, 1.4, 2.5)
 
 
 class RestartRequired(RuntimeError):
@@ -337,7 +342,9 @@ class ExporterService:
                             min(0.98, fraction),
                         )
             writer.finish()
-            temporary_dir.replace(archive_dir)
+            if progress:
+                progress("正在完成朋友圈归档并写入输出目录...", 0.99)
+            _publish_directory(temporary_dir, archive_dir)
 
         html_path = archive_dir / "index.html"
         json_path = archive_dir / "moments.json"
@@ -520,6 +527,51 @@ def _available_directory(parent: Path, base: str) -> Path:
         candidate = parent / f"{base} ({suffix})"
         suffix += 1
     return candidate
+
+
+def _publish_directory(
+    source: Path,
+    destination: Path,
+    *,
+    retry_delays: tuple[float, ...] = _DIRECTORY_PUBLISH_RETRY_DELAYS,
+) -> Path:
+    """Publish a completed directory despite brief Windows file locks.
+
+    Renaming is preferred because it is atomic on the same volume. Windows
+    indexers and security scanners can briefly hold a newly written file open,
+    so transient access/share errors are retried. If they persist, copytree is
+    used while the source temporary directory still exists; an incomplete
+    destination is removed before the error is propagated.
+    """
+    last_error: OSError | None = None
+    for attempt in range(len(retry_delays) + 1):
+        try:
+            return source.replace(destination)
+        except OSError as error:
+            if not _is_transient_publish_error(error):
+                raise
+            last_error = error
+            if attempt < len(retry_delays):
+                time.sleep(max(0.0, retry_delays[attempt]))
+
+    if destination.exists():
+        assert last_error is not None
+        raise last_error
+    try:
+        shutil.copytree(source, destination, copy_function=shutil.copy2)
+    except BaseException:
+        if destination.exists():
+            shutil.rmtree(destination, ignore_errors=True)
+        raise
+    return destination
+
+
+def _is_transient_publish_error(error: OSError) -> bool:
+    if isinstance(error, PermissionError):
+        return True
+    if getattr(error, "winerror", None) in {5, 32, 33}:
+        return True
+    return error.errno in {errno.EACCES, errno.EBUSY, errno.EPERM}
 
 
 def _conversation_output_dir(

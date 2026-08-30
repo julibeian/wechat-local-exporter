@@ -32,7 +32,7 @@ from wechat_exporter.models import (
     MomentMediaFile,
     PdfImage,
 )
-from wechat_exporter.service import ExporterService
+from wechat_exporter.service import ExporterService, _publish_directory
 
 
 def _jpeg_bytes(size: tuple[int, int] = (1200, 800)) -> bytes:
@@ -256,7 +256,9 @@ def test_moments_pdf_groups_dates_and_links_to_full_image_page(tmp_path) -> None
     assert (1200, 800) in dimensions
 
 
-def test_service_moments_export_builds_offline_archive_in_contact_folder(tmp_path) -> None:
+def test_service_moments_export_copies_archive_when_windows_blocks_rename(
+    tmp_path, monkeypatch
+) -> None:
     account = AccountLocation(tmp_path / "wxid_self_abcd", "wxid_self_abcd", "test")
     service = ExporterService(account)
     conversation = Conversation("wxid_friend", "好友")
@@ -275,8 +277,21 @@ def test_service_moments_export_builds_offline_archive_in_contact_folder(tmp_pat
             return [moment]
 
     service.archive = FakeArchive()  # type: ignore[assignment]
+    real_replace = Path.replace
+    blocked_attempts = 0
+
+    def deny_temporary_directory_rename(path: Path, target: Path) -> Path:
+        nonlocal blocked_attempts
+        if path.name.startswith(".朋友圈归档构建-"):
+            blocked_attempts += 1
+            raise PermissionError(13, "Windows 正在占用归档文件", str(path))
+        return real_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", deny_temporary_directory_rename)
+    monkeypatch.setattr("wechat_exporter.service.time.sleep", lambda _delay: None)
     result = service.export_moments_archive(conversation, tmp_path / "exports")
 
+    assert blocked_attempts > 1
     assert {path.name for path in result.files} == {
         "index.html",
         "moments.json",
@@ -285,6 +300,33 @@ def test_service_moments_export_builds_offline_archive_in_contact_folder(tmp_pat
     assert result.files[0].parent.parent.name == "朋友圈"
     assert result.files[0].parent.parent.parent.parent.name == "联系人"
     assert not list((tmp_path / "exports").rglob("*.pdf"))
+    assert not list((tmp_path / "exports").rglob(".朋友圈归档构建-*"))
+
+
+def test_publish_directory_retries_a_transient_access_error(
+    tmp_path, monkeypatch
+) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+    (source / "archive.txt").write_text("完整归档", encoding="utf-8")
+    real_replace = Path.replace
+    attempts = 0
+
+    def fail_twice(path: Path, target: Path) -> Path:
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 2:
+            raise PermissionError(13, "Windows 正在占用归档文件", str(path))
+        return real_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_twice)
+    published = _publish_directory(source, destination, retry_delays=(0.0, 0.0))
+
+    assert attempts == 3
+    assert published == destination
+    assert (destination / "archive.txt").read_text(encoding="utf-8") == "完整归档"
+    assert not source.exists()
 
 
 def test_isaac64_xor_roundtrip() -> None:
