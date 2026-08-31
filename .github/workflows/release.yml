@@ -65,9 +65,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $version = (Select-String -Path pyproject.toml -Pattern '^version = "(.+)"$').Matches.Groups[1].Value
           $tag = $env:GITHUB_REF_NAME
-          if ($tag -ne "v$version") { throw "Release tag does not match package version: $tag" }
+          if ($tag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw "Invalid release tag: $tag" }
+          $version = $tag.Substring(1)
+          $packageVersion = (Select-String -Path pyproject.toml -Pattern '^version = "(.+)"$').Matches.Groups[1].Value
+          if ($version -ne $packageVersion) { throw "Release tag does not match package version: $tag" }
           $assets = @(
             "dist/WeChat-TXT-PDF-Exporter-Installer-v$version.exe",
             "dist/WeChat-TXT-PDF-Exporter-v$version.exe"
@@ -79,11 +81,9 @@ jobs:
           }
           $checksums | Set-Content -LiteralPath $checksumFile -Encoding utf8
           $assets += $checksumFile
-          $notesPattern = '(?ms)^# ' + [regex]::Escape($tag) + '\r?\n.*?(?=^# v|\z)'
-          $notes = [regex]::Match((Get-Content RELEASE_NOTES.md -Raw), $notesPattern).Value.Trim()
-          if (-not $notes) { throw "Release notes not found for $tag" }
           $notesFile = Join-Path $env:RUNNER_TEMP "release-notes-$tag.md"
-          $notes | Set-Content -LiteralPath $notesFile -Encoding utf8
+          python scripts/render_release_notes.py --tag $tag --output $notesFile
+          if ($LASTEXITCODE -ne 0) { throw 'Release notes generation failed' }
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {
             gh release upload $tag @assets --clobber

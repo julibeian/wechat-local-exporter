@@ -1,8 +1,8 @@
+<!-- 这里只维护版本更新说明。Release 下载表由 scripts/render_release_notes.py 根据 tag 自动生成。 -->
+
 # v1.3.0
 
 发布日期：2026-08-31。
-
-Windows 用户请下载 `WeChat-TXT-PDF-Exporter-Installer-v1.3.0.exe`。
 
 - 新增软件内版本与更新窗口：静默后台检查、24 小时自动检查限频、可关闭且按版本去重的提醒、版本历史、内部下载和 SHA256 校验。GitHub 不可达时仅显示状态，不影响离线导出。
 - 安装版与便携版使用独立更新进程，等待原程序退出后安装/替换并重启。下载失败保留当前版本；替换或启动失败尝试恢复旧程序。
@@ -22,8 +22,6 @@ v1.2 用户首次需手动运行 v1.3 安装包；以后才可使用软件内更
 验证范围：122 项本地自动测试、离线打包自检及合成 EXE 的独立更新进程实测通过。真实微信登录/账号切换与真实 Inno 跨版本升级尚未完成人工回归，建议先以少量会话验证后再批量导出。已知边界与人工测试清单详见 [v1.3 开发说明](https://github.com/julibeian/wechat-txt-pdf-exporter/blob/v1.3.0/docs/v1.3.0-development.md)。
 
 # v1.2.0
-
-Windows 用户请下载 `WeChat-TXT-PDF-Exporter-Installer-v1.2.0.exe`。
 
 数据来源：聊天和朋友圈记录读取本机微信数据库，不会从云端拉取全部历史。朋友圈图片、视频可根据本机记录中的链接联网下载，也会读取本机缓存；导出内容在本机处理和保存，不上传。
 
@@ -62,5 +60,3 @@ Windows 用户请下载 `WeChat-TXT-PDF-Exporter-Installer-v1.2.0.exe`。
 - 放大导出历史窗口，可直接打开文件位置。
 - 连接微信 60 秒后以小型滑入窗口提示点亮 GitHub Star；本次关闭后不再显示。
 - 提供 Windows 10/11 x64 一键安装包。
-
-Windows 用户请下载 `WeChat-TXT-PDF-Exporter-Installer-v1.0.0.exe`。

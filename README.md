@@ -2,9 +2,24 @@
 
 把本人电脑里的微信聊天记录导出为可搜索的 TXT 和 PDF，并可把单个联系人的本机可见朋友圈导出为离线 HTML + JSON + 原始媒体归档。所有处理都在本机完成，不上传聊天内容。
 
+**[⬇ 下载](#下载)** · [使用说明](#使用) · [全部历史版本](https://github.com/julibeian/wechat-txt-pdf-exporter/releases)
+
 **建议在该微信账号长期使用的 Windows 电脑上运行。本工具仅读取这台电脑本地已经保存的微信数据库，不会从手机或微信云端补齐完整历史记录。**
 
 在陌生电脑临时扫码登录，只能读取实际同步到该电脑的数据，不等于完成聊天迁移。登录、设备认证和扫码始终由微信客户端负责，本工具不保存微信 Cookie、Token 或其他登录凭据。
+
+## 下载
+
+### Windows 一键安装（推荐）
+
+**[⬇ 下载最新版本](https://github.com/julibeian/wechat-txt-pdf-exporter/releases/latest)**　[查看全部历史版本](https://github.com/julibeian/wechat-txt-pdf-exporter/releases)
+
+- **安装版**：普通 Windows 用户优先选择。按向导安装，自动创建快捷方式，后续可在软件内更新（v1.3 起支持）。
+- **便携版**：无需安装，直接运行；在 Release 下载表中选择“便携版”。
+
+需要旧版本？[查看全部历史版本](https://github.com/julibeian/wechat-txt-pdf-exporter/releases)，进入对应版本选择文件。
+
+仅支持 Windows 10/11 x64，无需安装 Python。安装包尚未配置商业代码签名证书，Windows 可能显示“未知发布者”。
 
 ## 数据来源与联网范围
 
@@ -13,14 +28,6 @@
 - 聊天数据库仅在本机处理 · 密钥只保存在内存 · 不上传聊天数据 · 不修改微信。检查更新及部分媒体获取功能可能联网。
 - 更新检查只读取公共 GitHub Release，无需 GitHub 登录，不携带微信账号、路径或聊天内容。无法访问 GitHub 时只显示“暂时无法检查更新”，不会影响本地连接和导出。
 - “本地导出、不上传”指内容在本机处理和保存，不代表完全不联网。换电脑后，需要先让微信把所需记录同步或迁移到该电脑。
-
-## 下载
-
-[前往 Releases 下载 Windows 一键安装包](https://github.com/julibeian/wechat-txt-pdf-exporter/releases/latest)
-
-当前只维护 Windows 10/11 x64 正式版。下载安装包后双击运行，按向导完成安装即可。
-
-当前安装包尚未配置商业代码签名证书，Windows 可能显示“未知发布者”。
 
 ## 功能
 
@@ -99,11 +106,11 @@
 
 - 启动 4 秒后后台静默检查；包括失败在内，每 24 小时最多自动尝试一次。手动点击“重新检查”不受此限制。当前已经是最新版本时不弹窗。
 - 新版本在主界面显示小横幅；关闭后记录该版本，下次启动不会再主动提醒同一版本，标题旁仍保留新版本状态。以后有其他新版本才重新显示横幅。
-- “版本与更新”展示当前/最新版本、GitHub 发布时间和 Release 内容。离线可查看程序内附带的 `RELEASE_NOTES.md`。Release 说明仍由该文件生成，不维护另一套文案。
+- “版本与更新”展示当前/最新版本、GitHub 发布时间和 Release 内容。离线可查看程序内附带的 `RELEASE_NOTES.md`。Release 更新说明来自同一文件，下载表由发布脚本按 tag 自动生成。
 - “下载并更新”在软件内下载并验证 SHA256，不强制跳浏览器。完成后由用户确认退出；独立更新程序等待主程序退出，再安装/替换并启动新版。进行连接或导出时不能开始安装。
 - 下载、校验、更新进程启动失败时保留当前程序；替换/启动失败会尝试恢复旧 EXE。安装版通过原 Inno Setup 安装目录升级，无须管理员权限。未成功的更新目录中保留 `previous.exe` 供恢复。
 - 安装版路径仍为 `%LOCALAPPDATA%\Programs\WeChatChatExporter`，正式 EXE 自 v1.3 起使用 `WeChat-TXT-PDF-Exporter.exe`。安装时移除该目录中旧的 `WeChat-TXT-PDF-Exporter-v*.exe` 并更新标准快捷方式。
-- Release 附件继续带版本号：`WeChat-TXT-PDF-Exporter-Installer-v1.3.0.exe`、`WeChat-TXT-PDF-Exporter-v1.3.0.exe`、`SHA256SUMS-v1.3.0.txt`。便携版原地替换时保留用户当前文件名，界面版本号以程序内部版本为准。
+- Release 下载表提供带版本号的安装包、便携版和 SHA256 校验文件。便携版原地替换时保留用户当前文件名，界面版本号以程序内部版本为准。
 - **v1.2 没有更新入口，因此首次升级到 v1.3 仍需手动运行一次 v1.3 安装包**。之后才可软件内更新。已有导出、历史记录不迁移、不删除；手工创建的旧版快捷方式可能需要重新指向稳定文件名。
 
 更新缓存和非敏感设置保存到 `%LOCALAPPDATA%\WeChatChatExporter\settings.json`，更新下载在同目录的 `updates/`。codec 缓存只有 DLL 路径、大小、修改时间一致才复用，微信升级后重新扫描。账号/路径只是提示，不能替代当前进程确认。配置损坏、目录不可写都不会使离线导出依赖配置成功。
