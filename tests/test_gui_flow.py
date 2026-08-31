@@ -9,6 +9,8 @@ from wechat_exporter.gui import (
     ExporterApp,
     HISTORY_DIALOG_MIN_SIZE,
     HISTORY_DIALOG_SIZE,
+    PANE_SASH_ALLOWANCE,
+    SESSION_PANE_MIN_HEIGHT,
     STAR_PROMPT_DELAY_SECONDS,
     StarPrompt,
     _conversation_matches_filters,
@@ -17,6 +19,7 @@ from wechat_exporter.gui import (
     _date_range_timestamps,
     _format_date_range,
     _moments_export_eligibility,
+    _expanded_session_pane_height,
 )
 from wechat_exporter.windows import select_current_account
 
@@ -90,6 +93,20 @@ def test_star_prompt_is_embedded_and_history_dialog_is_larger() -> None:
     assert issubclass(StarPrompt, __import__("tkinter").Frame)
     assert HISTORY_DIALOG_SIZE == (1380, 760)
     assert HISTORY_DIALOG_MIN_SIZE == (1080, 580)
+
+
+def test_dismissing_star_prompt_gives_its_height_to_conversation_list() -> None:
+    with_prompt = 225
+    without_prompt = _expanded_session_pane_height(
+        with_prompt,
+        reclaimed_height=55,
+        available_height=700,
+        export_required_height=305,
+    )
+
+    assert without_prompt - with_prompt == 55
+    assert with_prompt >= SESSION_PANE_MIN_HEIGHT
+    assert PANE_SASH_ALLOWANCE == 8
 
 
 def test_moments_export_requires_one_personal_contact_only() -> None:

@@ -38,6 +38,9 @@ from .windows import (
 STAR_PROMPT_DELAY_SECONDS = 60.0
 HISTORY_DIALOG_SIZE = (1380, 760)
 HISTORY_DIALOG_MIN_SIZE = (1080, 580)
+SESSION_PANE_MIN_HEIGHT = 180
+EXPORT_PANE_MIN_HEIGHT = 250
+PANE_SASH_ALLOWANCE = 8
 VOICE_TEXT_GUIDE_STEPS = (
     "在微信中打开含语音消息的聊天。",
     "电脑版：右键语音气泡，选择“转文字”；手机端：长按语音气泡，选择“转文字”。",
@@ -717,8 +720,6 @@ class ExporterApp:
             foreground="#315C91",
         ).pack(anchor="w", pady=(3, 12))
 
-        self.star_prompt_host = ttk.Frame(outer)
-
         source = ttk.LabelFrame(outer, text="1. 连接微信", padding=10)
         self.source_frame = source
         source.pack(fill="x")
@@ -803,6 +804,7 @@ class ExporterApp:
             )
 
         export = ttk.LabelFrame(middle, text="3. 导出", padding=10)
+        self.export_frame = export
         middle.add(export, weight=2)
         export.columnconfigure(1, weight=1)
         ttk.Label(export, text="日期范围").grid(row=0, column=0, sticky="w")
@@ -940,6 +942,16 @@ class ExporterApp:
         )
         self.moments_button.pack(side="right", padx=(0, 10))
 
+        self.star_prompt_host = ttk.Frame(export)
+        self.star_prompt_host.grid(
+            row=9,
+            column=0,
+            columnspan=4,
+            sticky="ew",
+            pady=(12, 0),
+        )
+        self.star_prompt_host.grid_remove()
+
         status_row = ttk.Frame(outer)
         status_row.pack(fill="x")
         self.progress = ttk.Progressbar(status_row, maximum=100, mode="determinate")
@@ -951,6 +963,40 @@ class ExporterApp:
         try:
             available = self.middle.winfo_height()
             session_height = max(180, min(225, int(available * 0.40)))
+            self.middle.sashpos(0, session_height)
+        except tk.TclError:
+            pass
+
+    def _ensure_star_prompt_fits(self) -> None:
+        try:
+            self.root.update_idletasks()
+            available = self.middle.winfo_height()
+            export_required = self.export_frame.winfo_reqheight()
+            current = self.middle.sashpos(0)
+            maximum = max(
+                SESSION_PANE_MIN_HEIGHT,
+                available - export_required - PANE_SASH_ALLOWANCE,
+            )
+            if current > maximum:
+                self.middle.sashpos(0, maximum)
+        except tk.TclError:
+            pass
+
+    def _expand_sessions_after_star(
+        self,
+        previous_sash: int,
+        reclaimed_height: int,
+    ) -> None:
+        try:
+            self.root.update_idletasks()
+            available = self.middle.winfo_height()
+            export_required = self.export_frame.winfo_reqheight()
+            session_height = _expanded_session_pane_height(
+                previous_sash,
+                reclaimed_height,
+                available,
+                export_required,
+            )
             self.middle.sashpos(0, session_height)
         except tk.TclError:
             pass
@@ -1021,14 +1067,24 @@ class ExporterApp:
             self.star_prompt_host,
             on_close=self._hide_star_prompt,
         ).pack(fill="x")
-        self.star_prompt_host.pack(
-            fill="x",
-            pady=(0, 9),
-            before=self.source_frame,
-        )
+        self.star_prompt_host.grid()
+        self.root.after_idle(self._ensure_star_prompt_fits)
 
     def _hide_star_prompt(self) -> None:
-        self.star_prompt_host.pack_forget()
+        try:
+            self.root.update_idletasks()
+            previous_sash = self.middle.sashpos(0)
+            reclaimed_height = self.star_prompt_host.winfo_reqheight() + 12
+        except tk.TclError:
+            previous_sash = SESSION_PANE_MIN_HEIGHT
+            reclaimed_height = 0
+        self.star_prompt_host.grid_remove()
+        self.root.after_idle(
+            lambda: self._expand_sessions_after_star(
+                previous_sash,
+                reclaimed_height,
+            )
+        )
 
     def _choose_date_range(self) -> None:
         start_value = date.fromisoformat(self.start_var.get()) if self.start_var.get() else None
@@ -1737,6 +1793,25 @@ def _conversation_matches_filters(
         or query in conversation.display_name.lower()
         or query in conversation.username.lower()
         or query in conversation.summary.lower()
+    )
+
+
+def _expanded_session_pane_height(
+    current_height: int,
+    reclaimed_height: int,
+    available_height: int,
+    export_required_height: int,
+) -> int:
+    """Give the dismissed Star banner's height to the conversation chooser."""
+    maximum = max(
+        SESSION_PANE_MIN_HEIGHT,
+        available_height
+        - max(EXPORT_PANE_MIN_HEIGHT, export_required_height)
+        - PANE_SASH_ALLOWANCE,
+    )
+    return max(
+        SESSION_PANE_MIN_HEIGHT,
+        min(maximum, current_height + max(0, reclaimed_height)),
     )
 
 
