@@ -710,7 +710,7 @@ class ExporterApp:
         title.pack(anchor="w")
         ttk.Label(
             outer,
-            text="新版功能：联系人/群聊独立目录 · 导出历史 · 历史文件快捷打开",
+            text="导出范围以本机数据库为准 · 不拉取云端全部历史 · 朋友圈图片/视频可联网下载",
             foreground="#2457A7",
             font=("Microsoft YaHei UI", 9, "bold"),
         ).pack(anchor="w", pady=(2, 0))
