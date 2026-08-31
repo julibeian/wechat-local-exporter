@@ -39,10 +39,10 @@ def test_auto_select_prefers_current_process_account(tmp_path: Path) -> None:
     assert select_current_account([newest, running]) == running
 
 
-def test_auto_select_uses_newest_database_without_process_match(tmp_path: Path) -> None:
+def test_auto_select_never_assumes_newest_database_is_logged_in(tmp_path: Path) -> None:
     older = _account(tmp_path, "wxid_older", "常用目录", 100)
     newest = _account(tmp_path, "wxid_newest", "常用目录", 200)
-    assert select_current_account([older, newest]) == newest
+    assert select_current_account([older, newest]) is None
 
 
 def test_date_range_uses_full_local_days() -> None:

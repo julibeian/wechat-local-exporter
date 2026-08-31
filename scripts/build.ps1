@@ -1,5 +1,6 @@
 param(
-    [string]$Python = ".\.venv\Scripts\python.exe"
+    [string]$Python = ".\.venv\Scripts\python.exe",
+    [switch]$Install
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,13 +23,15 @@ $portable = (Resolve-Path "dist\WeChat-TXT-PDF-Exporter-v$version.exe").Path
 $selfTestDir = Join-Path $PWD "tmp\package-self-test"
 $process = Start-Process `
     -FilePath $portable `
-    -ArgumentList @("--self-test", $selfTestDir) `
+    -ArgumentList @("--self-test-offline", $selfTestDir) `
     -Wait `
     -PassThru `
     -WindowStyle Hidden
 if ($process.ExitCode -ne 0) {
     throw "Packaged self-test failed: $($process.ExitCode)"
 }
+& $Python "scripts\verify_packaged_update.py" $portable
+if ($LASTEXITCODE -ne 0) { throw "Packaged updater smoke test failed." }
 
 $iscc = @(
     "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
@@ -44,15 +47,19 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $installer = (Resolve-Path "dist\WeChat-TXT-PDF-Exporter-Installer-v$version.exe").Path
+$checksums = foreach ($asset in @($installer, $portable)) {
+    $hash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()
+    "$hash  $(Split-Path $asset -Leaf)"
+}
+$checksums | Set-Content -LiteralPath "dist\SHA256SUMS-v$version.txt" -Encoding utf8
+if (-not $Install) {
+    Write-Host "Build complete. Install explicitly with -Install if desired."
+    return
+}
 $installDir = Join-Path $env:LOCALAPPDATA "Programs\WeChatChatExporter"
-$installedExe = Join-Path $installDir "WeChat-TXT-PDF-Exporter-v$version.exe"
-New-Item -ItemType Directory -Path $installDir -Force | Out-Null
-Copy-Item -LiteralPath $portable -Destination $installedExe -Force
-Copy-Item -LiteralPath "LICENSE" -Destination (Join-Path $installDir "LICENSE") -Force
-Copy-Item `
-    -LiteralPath "THIRD_PARTY_NOTICES.md" `
-    -Destination (Join-Path $installDir "THIRD_PARTY_NOTICES.md") `
-    -Force
+$installedExe = Join-Path $installDir "WeChat-TXT-PDF-Exporter.exe"
+$installProcess = Start-Process -FilePath $installer -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-') -Wait -PassThru -WindowStyle Hidden
+if ($installProcess.ExitCode -ne 0) { throw "Installer failed: $($installProcess.ExitCode)" }
 
 $desktopDir = [Environment]::GetFolderPath("Desktop")
 if (-not $desktopDir) {

@@ -17,6 +17,7 @@ from .crypto import (
     keys_from_master_password,
 )
 from .windows import bring_wechat_to_front
+from .config import LocalConfig
 
 
 _RIP_RELATIVE_LEA = re.compile(
@@ -133,6 +134,8 @@ def locate_weixin_dll(executable: Path) -> Path:
     candidates = []
     if version:
         candidates.append(executable.parent / version / "Weixin.dll")
+        if candidates[0].is_file():
+            return candidates[0]
     candidates.extend(executable.parent.glob("*.*.*.*\\Weixin.dll"))
     existing = [path for path in candidates if path.is_file()]
     if not existing:
@@ -177,6 +180,7 @@ def prepare_key_capture(
     executable: Path,
     *,
     progress: Callable[[str], None] | None = None,
+    config: LocalConfig | None = None,
 ) -> KeyCapturePreparation:
     """Load the capture runtime and scan the installed build before consent."""
     try:
@@ -189,7 +193,15 @@ def prepare_key_capture(
     frida.get_local_device()
     dll = locate_weixin_dll(executable)
     stat = dll.stat()
-    codec_rva = find_codec_config_rva(dll)
+    config = config if config is not None else LocalConfig()
+    cached = KeyCapturePreparation(
+        Path(config.get("dll_path", ".")), config.get("dll_size", 0),
+        config.get("dll_mtime_ns", 0), config.get("codec_rva", 0),
+    )
+    codec_rva = cached.codec_rva if 0 < cached.codec_rva < 2**32 and cached.matches(executable) else find_codec_config_rva(dll)
+    config.set(dll_path=str(dll.resolve()), dll_size=stat.st_size,
+               dll_mtime_ns=stat.st_mtime_ns, codec_rva=codec_rva,
+               weixin_executable=str(executable.resolve()), weixin_version=_windows_file_version(executable))
     if progress:
         progress("微信启动准备已完成")
     return KeyCapturePreparation(
@@ -207,6 +219,7 @@ def capture_keys_during_wechat_start(
     timeout_seconds: int = 75,
     progress: Callable[[str], None] | None = None,
     preparation: KeyCapturePreparation | None = None,
+    target_resolver: Callable[[int], Iterable[DatabaseTarget]] | None = None,
 ) -> DatabaseKeys:
     """Spawn WeChat under a short-lived Frida hook and return validated keys.
 
@@ -254,6 +267,7 @@ def capture_keys_during_wechat_start(
                 signature += ('0' + view[i].toString(16)).slice(-2);
               }}
               if (seenCandidates[signature]) return;
+              if (uniqueCandidates >= 64) return;
               seenCandidates[signature] = true;
               uniqueCandidates += 1;
               if (uniqueCandidates > 64) return;
@@ -275,23 +289,43 @@ def capture_keys_during_wechat_start(
 
     def validate_candidates() -> None:
         checked = 0
+        pending: list[bytes] = []
+        last_resolution = 0.0
+        current_targets = target_list
         while not stop_validator.is_set():
             try:
                 candidate = candidate_queue.get(timeout=0.2)
+                pending.append(candidate)
             except queue.Empty:
+                pass
+            if not pending or time.monotonic() - last_resolution < 1.0:
                 continue
-            checked += 1
-            if progress:
-                progress(f"正在快速验证登录密钥（候选 {checked}）...")
+            last_resolution = time.monotonic()
             try:
-                candidate_keys = keys_from_master_password(candidate, target_list)
-            except ValueError:
-                continue
-            required = {"contact\\contact.db", "session\\session.db"}
-            available = set(candidate_keys.paths())
-            has_messages = any(path.startswith("message\\message_") for path in available)
-            if required.issubset(available) and has_messages:
-                result["keys"] = candidate_keys
+                if target_resolver is not None:
+                    if pid is None:
+                        continue
+                    current_targets = list(target_resolver(pid))
+                required = {"contact\\contact.db", "session\\session.db"}
+                if not required.issubset({t.relative_path for t in current_targets}):
+                    continue
+                # Retain candidates in memory while login creates/opens the DBs.
+                for candidate in pending:
+                    if stop_validator.is_set():
+                        return
+                    checked += 1
+                    if progress:
+                        progress(f"正在验证当前账号数据库（候选 {checked}）...")
+                    candidate_keys = keys_from_master_password(candidate, current_targets)
+                    available = set(candidate_keys.paths())
+                    if required.issubset(available) and all(t.relative_path in available for t in current_targets):
+                        result["keys"] = candidate_keys
+                        event.set()
+                        stop_validator.set()
+                        pending.clear()
+                        return
+            except Exception:
+                result["error"] = RuntimeError("未能确认当前账号并验证数据库，请完成微信登录后重试。")
                 event.set()
                 stop_validator.set()
                 return
@@ -299,7 +333,7 @@ def capture_keys_during_wechat_start(
     def on_message(message: dict[str, object], data: bytes | None) -> None:
         payload = message.get("payload")
         if message.get("type") == "error":
-            result["error"] = RuntimeError(str(message.get("stack") or message))
+            result["error"] = RuntimeError("微信读取组件未能运行，请重新连接。")
             event.set()
             return
         if not isinstance(payload, dict):
@@ -323,7 +357,7 @@ def capture_keys_during_wechat_start(
                 )
                 event.set()
         elif message_type in {"install-error", "read-error"}:
-            result["error"] = RuntimeError(str(payload.get("message") or "微信读取组件失败"))
+            result["error"] = RuntimeError("微信读取组件失败，请重新连接。")
             event.set()
 
     device = frida.get_local_device()
@@ -366,6 +400,10 @@ def capture_keys_during_wechat_start(
         if "error" in result:
             raise result["error"]  # type: ignore[misc]
         raise TimeoutError("等待微信数据库打开超时。请确认已完成登录，并重新尝试。")
+    except TimeoutError:
+        raise TimeoutError("等待微信数据库打开超时。请完成登录后重试。") from None
+    except Exception:
+        raise RuntimeError("微信读取组件未能完成连接，请确认版本受支持后重试。") from None
     finally:
         stop_validator.set()
         if script is not None:
@@ -384,3 +422,9 @@ def capture_keys_during_wechat_start(
             except Exception:
                 pass
         validator.join(timeout=1.5)
+        seen_candidates.clear()
+        while not candidate_queue.empty():
+            try:
+                candidate_queue.get_nowait()
+            except queue.Empty:
+                break

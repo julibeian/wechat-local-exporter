@@ -46,8 +46,9 @@ class RestartRequired(RuntimeError):
 
 
 class ExporterService:
-    def __init__(self, account: AccountLocation):
+    def __init__(self, account: AccountLocation, *, process_id: int | None = None):
         self.account = account
+        self.process_id = process_id
         self.targets = collect_required_databases(account.db_dir)
         self.workspace: DecryptedWorkspace | None = None
         self.archive: WeChatArchive | None = None
@@ -65,11 +66,11 @@ class ExporterService:
         calibrations: list[SenderCalibration] | None = None,
     ) -> WeChatArchive:
         try:
-            keys = extract_database_keys(self.targets, progress=progress)
-        except RuntimeError as error:
+            keys = extract_database_keys(self.targets, progress=progress, process_id=self.process_id)
+        except RuntimeError:
             raise RestartRequired(
                 "当前微信版本需要在启动瞬间从本机进程内存中临时捕获数据库主密钥。"
-            ) from error
+            ) from None
         return self._prepare(keys, progress=progress, calibrations=calibrations)
 
     def connect_during_wechat_start(
@@ -87,12 +88,30 @@ class ExporterService:
             if progress:
                 progress(message, 0.25)
 
+        # Resolve again after login: the user may choose a different account.
+        from .connection import resolve_running_account
+
+        resolved = []
+
+        def current_targets(pid):
+            current = resolve_running_account(pid)
+            if current is None:
+                return []
+            resolved[:] = [current]
+            return collect_required_databases(current.account.db_dir)
+
         keys = capture_keys_during_wechat_start(
             executable,
-            self.targets,
+            [],
             progress=capture_progress,
             preparation=capture_preparation,
+            target_resolver=current_targets,
         )
+        if not resolved or resolve_running_account(resolved[0].pid) != resolved[0]:
+            raise RuntimeError("当前账号已变化，请重新连接")
+        self.account = resolved[0].account
+        self.process_id = resolved[0].pid
+        self.targets = collect_required_databases(self.account.db_dir)
         return self._prepare(keys, progress=progress, calibrations=calibrations)
 
     def _prepare(
@@ -109,9 +128,13 @@ class ExporterService:
             if progress:
                 progress(message, 0.35 + fraction * 0.6)
 
-        self.workspace.prepare(progress=snapshot_progress)
-        self.archive = WeChatArchive(self.account, self.workspace, calibrations)
-        self.archive.load_metadata()
+        try:
+            self.workspace.prepare(progress=snapshot_progress)
+            self.archive = WeChatArchive(self.account, self.workspace, calibrations)
+            self.archive.load_metadata()
+        except BaseException:
+            self.close()
+            raise
         if progress:
             progress("会话索引已就绪", 1.0)
         return self.archive

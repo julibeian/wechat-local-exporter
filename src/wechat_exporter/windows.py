@@ -462,13 +462,14 @@ def discover_accounts(
     if found and progress:
         progress("已自动识别微信账号，无需选择目录")
 
-    if include_process_memory and not found:
+    if include_process_memory:
         processes = list_wechat_processes()
         if processes:
             if progress:
                 progress("正在从微信进程中只读识别数据目录...")
-            for db_path in discover_db_paths_from_process(processes[0].pid):
-                add(_account_from_path(db_path, "微信进程"))
+            for process in processes:
+                for db_path in discover_db_paths_from_process(process.pid):
+                    add(_account_from_path(db_path, "微信进程"))
 
     return sorted(found.values(), key=lambda item: str(item.account_dir).lower())
 
@@ -476,24 +477,9 @@ def discover_accounts(
 def select_current_account(
     accounts: Iterable[AccountLocation],
 ) -> AccountLocation | None:
-    values = list(accounts)
-    if not values:
-        return None
-
-    def rank(account: AccountLocation) -> tuple[int, int, str]:
-        newest = 0
-        for candidate in (
-            account.db_dir / "session" / "session.db",
-            account.db_dir / "contact" / "contact.db",
-        ):
-            try:
-                newest = max(newest, candidate.stat().st_mtime_ns)
-            except OSError:
-                pass
-        from_running_process = 1 if account.source == "微信进程" else 0
-        return from_running_process, newest, str(account.account_dir).lower()
-
-    return max(values, key=rank)
+    # Directory timestamps and saved hints are never proof of a login.
+    values = {str(a.account_dir.resolve()).lower(): a for a in accounts if a.source == "微信进程"}
+    return next(iter(values.values())) if len(values) == 1 else None
 
 
 def read_wechat_version() -> str:

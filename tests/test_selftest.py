@@ -45,3 +45,13 @@ def test_packaged_self_test_payload(tmp_path: Path) -> None:
     assert 'loading="lazy"' in moments_html
     assert moments_payload["summary"]["images"] == 1
     assert (tmp_path / receipt["moments_manifest"]).is_file()
+
+
+def test_optional_environment_probe_checks_availability_without_guessing_login(tmp_path, monkeypatch):
+    from wechat_exporter import selftest
+    executable = tmp_path / "Weixin.exe"
+    executable.write_bytes(b"synthetic")
+    monkeypatch.setattr(selftest, "find_weixin_executable", lambda: executable)
+    monkeypatch.setattr(selftest, "discover_accounts", lambda **kwargs: [object()])
+    receipt = run_packaged_self_test(tmp_path / "output", check_environment=True)
+    assert json.loads(receipt.read_text(encoding="utf-8"))["auto_discovery"] == "ok"

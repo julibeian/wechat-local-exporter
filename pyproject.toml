@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wechat-txt-pdf-exporter"
-version = "1.2.0"
-description = "Local-only Windows WeChat 4.x chat and Moments archive exporter"
+version = "1.3.0"
+description = "Local-first Windows WeChat 4.x chat and Moments archive exporter"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

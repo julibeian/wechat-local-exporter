@@ -1,11 +1,12 @@
 #ifndef AppVersion
-  #define AppVersion "1.2.0"
+  #define AppVersion "1.3.0"
 #endif
 
 #define AppName "微信聊天 TXT/PDF 导出工具"
 #define AppPublisher "julibeian"
 #define AppURL "https://github.com/julibeian/wechat-txt-pdf-exporter"
-#define AppExeName "WeChat-TXT-PDF-Exporter-v" + AppVersion + ".exe"
+#define AppExeName "WeChat-TXT-PDF-Exporter.exe"
+#define ReleaseExeName "WeChat-TXT-PDF-Exporter-v" + AppVersion + ".exe"
 
 [Setup]
 AppId={{A7639FD4-469B-41C7-A3A0-901C8E6D12E3}
@@ -28,14 +29,21 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\{#AppExeName}
 SetupLogging=yes
+CloseApplications=yes
+RestartApplications=no
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式："; Flags: unchecked
 
 [Files]
-Source: "..\dist\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\{#ReleaseExeName}"; DestDir: "{app}"; DestName: "{#AppExeName}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\RELEASE_NOTES.md"; DestDir: "{app}"; Flags: ignoreversion
+
+[InstallDelete]
+; Narrow legacy executable pattern; exports, settings and unrelated files are untouched.
+Type: files; Name: "{app}\WeChat-TXT-PDF-Exporter-v*.exe"
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"

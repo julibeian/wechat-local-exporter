@@ -37,6 +37,13 @@ jobs:
           $process = Start-Process -FilePath $exe -ArgumentList @('--self-test-offline', (Join-Path $PWD 'tmp/package-self-test')) -Wait -PassThru -WindowStyle Hidden
           if ($process.ExitCode -ne 0) { exit $process.ExitCode }
 
+      - name: Verify frozen updater with synthetic executables
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path pyproject.toml -Pattern '^version = "(.+)"$').Matches.Groups[1].Value
+          python scripts/verify_packaged_update.py "dist/WeChat-TXT-PDF-Exporter-v$version.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Install Inno Setup
         run: choco install innosetup --yes --no-progress
 

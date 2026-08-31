@@ -30,6 +30,21 @@ SELF = "wxid_self"
 FRIEND = "wxid_friend"
 
 
+def test_metadata_stage_feasibility_and_incomplete_workload_boundary(tmp_path):
+    """Evidence for the deferred lazy-decryption design, not a production switch."""
+    archive, workspace = _build_archive(tmp_path)
+    try:
+        for _name, path in archive._message_databases():
+            path.unlink()
+        archive.load_metadata()
+        conversations = archive.conversations()
+        assert conversations  # Contact/session alone can render the initial list.
+        # Existing workload code would silently count zero without a preparation gate.
+        assert archive.export_workload(conversations, start_timestamp=0, end_timestamp=0).message_count == 0
+    finally:
+        workspace.close()
+
+
 def _create_database(path: Path, statements: list[str], rows: list[tuple[str, tuple]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path)

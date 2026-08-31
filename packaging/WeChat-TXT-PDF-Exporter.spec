@@ -9,7 +9,7 @@ root = Path(SPEC).resolve().parent.parent
 project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
 version = project["project"]["version"]
 
-datas = [(str(root / "THIRD_PARTY_NOTICES.md"), ".")]
+datas = [(str(root / "THIRD_PARTY_NOTICES.md"), "."), (str(root / "RELEASE_NOTES.md"), ".")]
 binaries = []
 hiddenimports = []
 frida_data, frida_binaries, frida_hiddenimports = collect_all("frida")

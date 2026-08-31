@@ -20,7 +20,7 @@ from .models import (
     PdfImage,
 )
 from .moments_archive import MomentsArchiveWriter
-from .windows import discover_accounts, find_weixin_executable, select_current_account
+from .windows import discover_accounts, find_weixin_executable
 
 
 def run_packaged_self_test(
@@ -38,11 +38,11 @@ def run_packaged_self_test(
     environment_status = "skipped"
     if check_environment:
         executable = find_weixin_executable()
-        account = select_current_account(
-            discover_accounts(include_process_memory=False)
-        )
-        if not executable.is_file() or account is None:
-            raise RuntimeError("没有自动识别到微信程序或当前账号")
+        # This optional environment probe checks local availability, not login
+        # identity. Only the connection flow can confirm the current account.
+        accounts = discover_accounts(include_process_memory=False)
+        if not executable.is_file() or not accounts:
+            raise RuntimeError("没有自动识别到微信程序或本地账号目录")
         environment_status = "ok"
     conversation = Conversation(
         username="selftest_contact",

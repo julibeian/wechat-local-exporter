@@ -17,22 +17,20 @@ from . import PROJECT_URL, __version__
 from .archive import CalibrationSample
 from .history import ExportHistoryEntry, append_export_history, load_export_history
 from .integrity import require_signature_integrity
-from .key_capture import KeyCapturePreparation, prepare_key_capture
+from .config import LocalConfig
+from .connection import ConnectionManager
+from .errors import user_message
+from .update import UpdateManager
+from .update_ui import UpdateController
 from .models import AccountLocation, Conversation, ExportRequest, ExportWorkload
 from .service import (
     ExporterService,
+    RestartRequired,
     estimate_export_seconds,
     estimate_moments_export_seconds,
     format_duration,
 )
-from .windows import (
-    discover_accounts,
-    find_weixin_executable,
-    list_wechat_processes,
-    read_wechat_version,
-    request_wechat_exit,
-    select_current_account,
-)
+from .windows import read_wechat_version
 
 
 STAR_PROMPT_DELAY_SECONDS = 60.0
@@ -46,6 +44,10 @@ VOICE_TEXT_GUIDE_STEPS = (
     "电脑版：右键语音气泡，选择“转文字”；手机端：长按语音气泡，选择“转文字”。",
     "等待文字完整显示在语音气泡下方。不要在转写仍进行时立即关闭微信。",
     "回到本工具连接微信，再导出 TXT 或 PDF；两种格式都会默认写入微信已有转写。",
+)
+LOCAL_DATA_NOTICE = (
+    "建议在该微信账号长期使用的 Windows 电脑上运行。本工具仅读取这台电脑本地已经保存的微信数据库，"
+    "不会从手机或微信云端补齐完整历史记录。"
 )
 
 
@@ -645,7 +647,12 @@ class ExporterApp:
         self.service: ExporterService | None = None
         self.account: AccountLocation | None = None
         self.wechat_executable: Path | None = None
-        self.capture_preparation: KeyCapturePreparation | None = None
+        self.config = LocalConfig()
+        self.connection = ConnectionManager(self.config)
+        self._threads: list[threading.Thread] = []
+        self._background_threads: list[threading.Thread] = []
+        self._closing = False
+        self._closed = False
         self.conversations: list[Conversation] = []
         self.visible_conversations: list[Conversation] = []
         self._conversation_by_iid: dict[str, Conversation] = {}
@@ -665,7 +672,7 @@ class ExporterApp:
         self._star_prompt_shown = False
         self._star_prompt_after_id: str | None = None
 
-        self.account_var = tk.StringVar(value="正在自动识别当前微信账号...")
+        self.account_var = tk.StringVar(value="尚未确认当前登录账号")
         self.search_var = tk.StringVar()
         self.conversation_type_var = tk.StringVar(value="all")
         self.output_var = tk.StringVar(value=str(Path.home() / "Desktop" / "微信聊天导出"))
@@ -702,32 +709,31 @@ class ExporterApp:
         self.outer = outer
         outer.pack(fill="both", expand=True)
 
+        title_row = ttk.Frame(outer)
+        title_row.pack(fill="x")
         title = ttk.Label(
-            outer,
-            text=f"微信聊天 TXT / PDF 本地导出 v{__version__}",
+            title_row,
+            text="微信聊天 TXT / PDF 本地导出",
             font=("Microsoft YaHei UI", 17, "bold"),
         )
-        title.pack(anchor="w")
+        title.pack(side="left")
+        self.updates = UpdateController(self.root, title_row, outer, UpdateManager(self.config),
+                                        busy=self._is_busy, shutdown=lambda: self._on_close(for_update=True))
         ttk.Label(
             outer,
-            text="导出范围以本机数据库为准 · 不拉取云端全部历史 · 朋友圈图片/视频可联网下载",
-            foreground="#2457A7",
-            font=("Microsoft YaHei UI", 9, "bold"),
-        ).pack(anchor="w", pady=(2, 0))
-        ttk.Label(
-            outer,
-            text="仅处理本人本机数据 · 只读快照 · 密钥只保存在内存 · 不上传 · 不修改微信",
+            text="聊天数据库仅在本机处理 · 密钥只保存在内存 · 不上传聊天数据 · 不修改微信。\n检查更新及部分媒体获取功能可能联网。",
             foreground="#315C91",
         ).pack(anchor="w", pady=(3, 12))
 
         source = ttk.LabelFrame(outer, text="1. 连接微信", padding=10)
         self.source_frame = source
         source.pack(fill="x")
+        self.updates.place_banner(source)
         source.columnconfigure(1, weight=1)
-        ttk.Label(source, textvariable=self.version_var).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
-        ttk.Label(source, text="当前账号").grid(row=1, column=0, sticky="w")
+        ttk.Label(source, textvariable=self.version_var).grid(row=0, column=2, sticky="e", padx=(8, 0))
+        ttk.Label(source, text="当前微信账号").grid(row=0, column=0, sticky="w")
         ttk.Label(source, textvariable=self.account_var, foreground="#315C91").grid(
-            row=1, column=1, sticky="w", padx=(8, 0)
+            row=0, column=1, sticky="w", padx=(8, 0)
         )
         self.connect_button = ttk.Button(
             source,
@@ -735,16 +741,19 @@ class ExporterApp:
             command=self._connect_clicked,
             state="disabled",
         )
-        self.connect_button.grid(row=2, column=1, sticky="w", pady=(9, 0))
+        self.connect_button.grid(row=1, column=0, sticky="w", pady=(8, 0))
         ttk.Label(
             source,
-            text="无需选择微信目录；确认连接后会重新启动微信，登录完成即自动显示会话。",
+            text="优先直接连接；只有需要重新启动微信时才会请你确认。",
             foreground="#6A7280",
-        ).grid(row=3, column=1, sticky="w", pady=(5, 0))
+        ).grid(row=1, column=1, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0))
+        ttk.Label(source, text=LOCAL_DATA_NOTICE, wraplength=820, foreground="#2457A7").grid(
+            row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
         middle = ttk.Panedwindow(outer, orient="vertical")
         self.middle = middle
         middle.pack(fill="both", expand=True, pady=12)
+        middle.bind("<Configure>", lambda _event: self.root.after_idle(self._fit_export_pane))
         sessions_frame = ttk.LabelFrame(middle, text="2. 选择联系人或群聊", padding=8)
         middle.add(sessions_frame, weight=4)
         sessions_frame.rowconfigure(1, weight=1)
@@ -963,6 +972,10 @@ class ExporterApp:
         try:
             available = self.middle.winfo_height()
             session_height = max(180, min(225, int(available * 0.40)))
+            # A banner/large native font must not push the export buttons below
+            # their pane. Small windows trade visible list rows for usable actions.
+            session_height = max(60, min(session_height,
+                available - self.export_frame.winfo_reqheight() - PANE_SASH_ALLOWANCE))
             self.middle.sashpos(0, session_height)
         except tk.TclError:
             pass
@@ -978,6 +991,16 @@ class ExporterApp:
                 available - export_required - PANE_SASH_ALLOWANCE,
             )
             if current > maximum:
+                self.middle.sashpos(0, maximum)
+        except tk.TclError:
+            pass
+
+    def _fit_export_pane(self) -> None:
+        if self._closed:
+            return
+        try:
+            maximum = max(60, self.middle.winfo_height() - self.export_frame.winfo_reqheight() - PANE_SASH_ALLOWANCE)
+            if self.middle.sashpos(0) > maximum:
                 self.middle.sashpos(0, maximum)
         except tk.TclError:
             pass
@@ -1100,77 +1123,58 @@ class ExporterApp:
         self._schedule_estimate()
 
     def _run_worker(self, name: str, func) -> None:
-        if self._worker_active:
+        if self._worker_active or self._closing or self.updates.installing:
             return
         self._worker_active = True
         self.connect_button.configure(state="disabled")
         self.export_button.configure(state="disabled")
         self.moments_button.configure(state="disabled")
         thread = threading.Thread(target=self._worker_wrapper, args=(name, func), daemon=True)
+        self._threads = [t for t in self._threads if t.is_alive()]
+        self._threads.append(thread)
         thread.start()
 
     def _worker_wrapper(self, name: str, func) -> None:
         try:
             value = func()
             self.events.put((f"{name}:ok", value))
-        except BaseException as error:
-            self.events.put((f"{name}:error", error))
+        except RestartRequired:
+            self.events.put(("connect:restart-required", None))
+        except Exception as error:
+            self.events.put((f"{name}:error", user_message(error)))
 
     def _progress_callback(self, message: str, fraction: float) -> None:
         self.events.put(("progress", (message, fraction)))
 
     def _detect(self):
         version = read_wechat_version()
-        accounts = discover_accounts(progress=lambda message: self._progress_callback(message, 0.1))
-        executable = find_weixin_executable()
-        preparation = prepare_key_capture(
-            executable,
-            progress=lambda message: self._progress_callback(message, 0.18),
-        )
-        return version, accounts, executable, preparation
+        executable = self.connection.executable()
+        return version, executable
 
     def _connect_clicked(self) -> None:
-        if not self.account or not self.wechat_executable:
-            messagebox.showerror(
-                "尚未识别微信",
-                "没有自动识别到本机微信账号。请先正常打开并登录一次微信，然后重新启动本软件。",
-            )
+        if self._worker_active or self._closing or self.updates.installing:
             return
-        running = bool(list_wechat_processes())
-        action = (
-            "软件将关闭当前微信并重新启动。请先保存尚未发送的内容；若微信只缩到托盘，软件会结束其剩余进程。\n\n"
-            if running
-            else "软件将启动微信。\n\n"
-        )
-        if not messagebox.askyesno(
-            "连接微信",
-            action
-            + "微信出现登录确认后，请在微信窗口点击“登录”。登录成功后，本软件会自动回到前台并显示可选对话。\n\n"
-            + "连接过程中会从本机进程内存临时捕获数据库主密钥；密钥不写入磁盘。继续吗？",
-        ):
-            self.connect_button.configure(state="normal")
-            self.status_var.set("已取消连接；可随时点击“连接微信并读取会话”")
-            return
-        if self.service:
-            self.service.close()
-        self.service = ExporterService(self.account)
-        self.status_var.set("正在启动微信，请稍候...")
+        self.account = None
+        self.account_var.set("尚未确认当前登录账号")
+        self.conversations = []
+        self._filter_conversations()
+        self._estimate_generation += 1
+        self._moments_estimate_generation += 1
+        self.status_var.set("正在确认当前账号并尝试直接连接…")
         self.progress.configure(mode="indeterminate")
         self.progress.start(12)
         self.root.update_idletasks()
         self._run_worker("connect", self._connect_and_load)
 
-    def _connect_and_load(self):
-        assert self.service and self.wechat_executable
-        if list_wechat_processes():
-            request_wechat_exit(
-                progress=lambda message: self._progress_callback(message, 0.12)
-            )
-        archive = self.service.connect_during_wechat_start(
-            self.wechat_executable,
-            progress=self._progress_callback,
-            capture_preparation=self.capture_preparation,
-        )
+    def _connect_and_load(self, allow_restart=False):
+        for thread in self._background_threads:
+            thread.join()
+        self._background_threads.clear()
+        if self.service:
+            self.service.close()
+            self.service = None
+        self.service = self.connection.connect(allow_restart=allow_restart, progress=self._progress_callback)
+        archive = self.service.archive
         return [archive.self_conversation(), *archive.conversations()]
 
     def _type_filter_changed(self) -> None:
@@ -1316,6 +1320,8 @@ class ExporterApp:
         end_timestamp: int,
     ) -> None:
         self._estimate_after_id = None
+        if self._worker_active or self._closing or self.updates.installing:
+            return
         archive = self.service.archive if self.service else None
         if archive is None:
             return
@@ -1333,11 +1339,14 @@ class ExporterApp:
             except BaseException as error:
                 self.events.put(("estimate:error", (generation, error)))
 
-        threading.Thread(
+        thread = threading.Thread(
             target=count_workload,
             name="wechat-export-estimate",
             daemon=True,
-        ).start()
+        )
+        self._background_threads = [t for t in self._background_threads if t.is_alive()]
+        self._background_threads.append(thread)
+        thread.start()
 
     def _show_estimate(
         self,
@@ -1404,6 +1413,8 @@ class ExporterApp:
         conversation: Conversation,
     ) -> None:
         self._moments_estimate_after_id = None
+        if self._worker_active or self._closing or self.updates.installing:
+            return
         archive = self.service.archive if self.service else None
         if archive is None:
             return
@@ -1421,11 +1432,14 @@ class ExporterApp:
             except BaseException as error:
                 self.events.put(("moments-estimate:error", (generation, error)))
 
-        threading.Thread(
+        thread = threading.Thread(
             target=count_moments,
             name="wechat-moments-estimate",
             daemon=True,
-        ).start()
+        )
+        self._background_threads = [t for t in self._background_threads if t.is_alive()]
+        self._background_threads.append(thread)
+        thread.start()
 
     def _show_moments_estimate(self, post_count: int, media_count: int) -> None:
         if post_count <= 0:
@@ -1538,6 +1552,8 @@ class ExporterApp:
         return True
 
     def _poll_events(self) -> None:
+        if self._closed:
+            return
         try:
             while True:
                 kind, payload = self.events.get_nowait()
@@ -1546,6 +1562,7 @@ class ExporterApp:
                     "detect:error",
                     "connect:ok",
                     "connect:error",
+                    "connect:restart-required",
                     "export:ok",
                     "export:error",
                 }:
@@ -1581,31 +1598,32 @@ class ExporterApp:
                             "朋友圈归档暂时无法估算；仍可正常导出"
                         )
                 elif kind == "detect:ok":
-                    version, accounts, executable, preparation = payload
+                    version, executable = payload
                     self.wechat_executable = executable
-                    self.capture_preparation = preparation
                     self.version_var.set(f"微信版本：{version or '未运行'}")
-                    self.account = select_current_account(accounts)
-                    if self.account:
-                        self.account_var.set(f"已自动识别：{self.account.wxid}")
-                        self.status_var.set("已识别微信，等待连接确认")
-                        self.connect_button.configure(state="normal")
-                        if not self.login_prompted:
-                            self.login_prompted = True
-                            self.root.after(250, self._connect_clicked)
+                    self.account_var.set("尚未确认当前登录账号")
+                    self.status_var.set("已找到微信，点击连接后确认当前账号")
+                    self.connect_button.configure(state="normal")
+                elif kind == "connect:restart-required":
+                    self.progress.stop()
+                    self.progress.configure(mode="determinate")
+                    self.connect_button.configure(state="normal")
+                    if not self._closing and messagebox.askyesno(
+                        "需要重新启动微信",
+                        "当前微信需要重新启动一次才能读取数据库。是否继续？\n\n"
+                        "请先保存尚未发送的内容。确认后会关闭并启动微信（若尚未运行则启动）；"
+                        "必要时会结束托盘中的剩余微信进程。登录由微信自身负责。\n\n" + LOCAL_DATA_NOTICE,
+                    ):
+                        self._run_worker("connect", lambda: self._connect_and_load(True))
                     else:
-                        self.account_var.set("未找到本机微信账号")
-                        self.status_var.set("请先正常打开并登录一次微信")
-                        self.connect_button.configure(state="disabled")
-                        messagebox.showerror(
-                            "未找到微信账号",
-                            "没有自动识别到微信数据。请先正常打开并登录一次微信，再重新启动本软件。",
-                        )
+                        self.status_var.set("已取消重新启动微信，可随时重新连接")
                 elif kind == "connect:ok":
                     self.progress.stop()
                     self.progress.configure(mode="determinate")
                     self.connect_button.configure(text="重新连接微信", state="normal")
                     self.conversations = list(payload)
+                    self.account = self.service.account
+                    self.account_var.set(f"{self.account.wxid}  ·  ✓ 已确认与当前微信进程一致")
                     self._estimate_cache.clear()
                     self._moments_estimate_cache.clear()
                     self._filter_conversations()
@@ -1616,7 +1634,8 @@ class ExporterApp:
                         f"已读取 {len(self.conversations)} 个联系人/群聊（已隐藏公众号）"
                     )
                     self._schedule_star_prompt_after_connection()
-                    self._focus_window()
+                    if not self._closing:
+                        self._focus_window()
                 elif kind == "export:ok":
                     result = payload
                     self._export_started_at = None
@@ -1636,6 +1655,8 @@ class ExporterApp:
                     self.status_var.set(
                         f"导出完成：{len(result.files)} 个文件 · 实际用时 {actual_duration}"
                     )
+                    if self._closing:
+                        continue
                     messagebox.showinfo(
                         "导出完成",
                         f"已生成 {len(result.files)} 个文件\n"
@@ -1649,13 +1670,16 @@ class ExporterApp:
                         self._latest_export_status = ""
                     self.progress.stop()
                     self.progress.configure(mode="determinate")
-                    if self.account and self.wechat_executable:
-                        self.connect_button.configure(state="normal")
+                    self.connect_button.configure(state="normal")
                     if self.service and self.service.archive:
                         self.export_button.configure(state="normal")
                         self._sync_moments_button_state()
                     self.status_var.set("操作失败")
-                    messagebox.showerror("操作失败", str(payload))
+                    if kind == "detect:error":
+                        self.version_var.set("微信版本：尚未检测到")
+                        self.status_var.set("请打开并登录微信，然后点击连接")
+                    elif not self._closing:
+                        messagebox.showerror("操作失败", str(payload))
         except queue.Empty:
             pass
         if self._export_started_at is not None:
@@ -1671,7 +1695,23 @@ class ExporterApp:
         self.root.after(700, lambda: self.root.attributes("-topmost", False))
         self.root.focus_force()
 
-    def _on_close(self) -> None:
+    def _is_busy(self) -> bool:
+        return self._closing or self._worker_active or any(t.is_alive() for t in self._background_threads)
+
+    def _on_close(self, *, for_update=False) -> None:
+        if self.updates.installing and not for_update:
+            self.status_var.set("正在交接给更新程序，请稍候…")
+            return
+        self._closing = True
+        self.updates.close()
+        self.connect_button.configure(state="disabled")
+        self.export_button.configure(state="disabled")
+        self.moments_button.configure(state="disabled")
+        # Do not remove SQLite snapshots while a worker is still querying/writing.
+        if any(t.is_alive() for t in self._threads + self._background_threads):
+            self.status_var.set("正在等待当前操作结束并清理临时数据库…")
+            self.root.after(150, lambda: self._on_close(for_update=for_update))
+            return
         if self._star_prompt_after_id is not None:
             try:
                 self.root.after_cancel(self._star_prompt_after_id)
@@ -1683,7 +1723,13 @@ class ExporterApp:
             except tk.TclError:
                 pass
         if self.service:
-            self.service.close()
+            try:
+                self.service.close()
+            except OSError:
+                self.status_var.set("临时数据库仍被占用，正在重试清理…")
+                self.root.after(300, lambda: self._on_close(for_update=for_update))
+                return
+        self._closed = True
         self.root.destroy()
 
 

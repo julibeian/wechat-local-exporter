@@ -163,6 +163,7 @@ def extract_database_keys(
     targets: Iterable[DatabaseTarget],
     *,
     progress: Callable[[str, float], None] | None = None,
+    process_id: int | None = None,
 ) -> DatabaseKeys:
     """Find WCDB raw keys in the current user's running Weixin.exe process.
 
@@ -177,6 +178,8 @@ def extract_database_keys(
         by_salt.setdefault(target.salt, []).append(target)
 
     processes = list_wechat_processes()
+    if process_id is not None:
+        processes = [p for p in processes if p.pid == process_id]
     if not processes:
         raise RuntimeError("微信没有运行。请先登录并保持微信窗口开启。")
 
@@ -274,6 +277,10 @@ def extract_database_keys(
         )
     if not any(path.startswith("message\\message_") for path in values):
         raise RuntimeError("未能验证消息数据库密钥。请在微信中打开一个聊天窗口后重试。")
+    if any(target.relative_path not in values for target in target_list):
+        # The GUI now prefers this path. A partially readable shard set must
+        # request restart rather than silently export only a fraction of history.
+        raise RuntimeError("部分本地数据库密钥尚未就绪，需要重新连接以完整读取。")
     if progress:
         progress(f"已在内存中验证 {len(values)} 个数据库密钥（不会落盘）", 1.0)
     return DatabaseKeys(values)
@@ -429,6 +436,7 @@ class DecryptedWorkspace:
 
     def close(self) -> None:
         self._temp.cleanup()
+        self.keys = DatabaseKeys({})
 
     def __enter__(self) -> DecryptedWorkspace:
         return self

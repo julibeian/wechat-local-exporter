@@ -6,6 +6,7 @@ import os
 import shutil
 import struct
 from pathlib import Path
+import pytest
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
@@ -152,3 +153,35 @@ def test_collect_required_databases_includes_moments_but_skips_voice_media(tmp_p
         "message\\message_0.db",
         "sns\\sns.db",
     }
+
+
+@pytest.mark.parametrize("extra_missing", [False, True])
+def test_key_scan_is_limited_to_confirmed_process(tmp_path, monkeypatch, extra_missing):
+    from types import SimpleNamespace
+    from wechat_exporter import crypto
+
+    scanned = []
+    class Memory:
+        def __init__(self, pid):
+            scanned.append(pid)
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def regions(self):
+            return [(0, 4096)]
+        def read(self, base, size):
+            return b"readable memory"
+    targets = [DatabaseTarget(relative, tmp_path / relative, 4096, b"s" * 16, b"x" * 4096)
+               for relative in ("contact\\contact.db", "session\\session.db", "message\\message_0.db")]
+    if extra_missing:
+        targets.append(DatabaseTarget("message\\message_1.db", tmp_path / "extra.db", 4096, b"t" * 16, b"x" * 4096))
+    monkeypatch.setattr(crypto, "list_wechat_processes", lambda: [SimpleNamespace(pid=1), SimpleNamespace(pid=2)])
+    monkeypatch.setattr(crypto, "ProcessMemory", Memory)
+    monkeypatch.setattr(crypto, "_find_adjacent_key_candidate", lambda memory, salt, page: b"k" * 32 if salt == b"s" * 16 else None)
+    if extra_missing:
+        with pytest.raises(RuntimeError, match="部分本地数据库"):
+            crypto.extract_database_keys(targets, process_id=2)
+    else:
+        assert len(crypto.extract_database_keys(targets, process_id=2)) == 3
+    assert scanned == [2]

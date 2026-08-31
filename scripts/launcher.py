@@ -8,6 +8,10 @@ def _run() -> int:
     from wechat_exporter.integrity import require_signature_integrity
 
     require_signature_integrity()
+    if len(sys.argv) == 3 and sys.argv[1] == "--apply-update":
+        from wechat_exporter.updater import run_helper
+
+        return run_helper(Path(sys.argv[2]))
     if len(sys.argv) >= 2 and sys.argv[1] in {
         "--self-test",
         "--self-test-offline",
