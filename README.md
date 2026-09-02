@@ -12,7 +12,7 @@
 
 ### Windows 一键安装（推荐）
 
-**[⬇ 下载最新版本](https://github.com/julibeian/wechat-txt-pdf-exporter/releases/latest)**　[查看全部历史版本](https://github.com/julibeian/wechat-txt-pdf-exporter/releases)
+**[⬇ 下载最新版本](https://github.com/julibeian/wechat-txt-pdf-exporter/releases/latest)**
 
 - **安装版**：普通 Windows 用户优先选择。按向导安装，自动创建快捷方式，后续可在软件内更新（v1.3 起支持）。
 - **便携版**：无需安装，直接运行；在 Release 下载表中选择“便携版”。
