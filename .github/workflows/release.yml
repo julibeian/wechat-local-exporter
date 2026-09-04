@@ -26,7 +26,7 @@ jobs:
       - name: Run tests
         run: python -m pytest
 
-      - name: Build portable executable
+      - name: Build application executable
         run: python -m PyInstaller --noconfirm --clean packaging/WeChat-TXT-PDF-Exporter.spec
 
       - name: Run packaged self-test
@@ -36,6 +36,8 @@ jobs:
           $exe = Join-Path $PWD "dist/WeChat-TXT-PDF-Exporter-v$version.exe"
           $process = Start-Process -FilePath $exe -ArgumentList @('--self-test-offline', (Join-Path $PWD 'tmp/package-self-test')) -Wait -PassThru -WindowStyle Hidden
           if ($process.ExitCode -ne 0) { exit $process.ExitCode }
+          $receipt = Get-Content 'tmp/package-self-test/self-test-result.json' -Raw | ConvertFrom-Json
+          if ($receipt.status -ne 'ok') { throw 'Packaged self-test receipt is invalid' }
 
       - name: Verify frozen updater with synthetic executables
         shell: pwsh
@@ -59,6 +61,31 @@ jobs:
           if (-not $iscc) { throw 'Inno Setup compiler not found' }
           & $iscc "/DAppVersion=$version" packaging/installer.iss
 
+      - name: Verify one-click installer
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path pyproject.toml -Pattern '^version = "(.+)"$').Matches.Groups[1].Value
+          $installer = (Resolve-Path "dist/WeChat-TXT-PDF-Exporter-Installer-v$version.exe").Path
+          $builtExe = (Resolve-Path "dist/WeChat-TXT-PDF-Exporter-v$version.exe").Path
+          $installDir = Join-Path $env:RUNNER_TEMP 'wechat-exporter-installed'
+          $process = Start-Process -FilePath $installer -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/SP-', '/NORESTART', '/NOICONS',
+            "/DIR=$installDir"
+          ) -Wait -PassThru -WindowStyle Hidden
+          if ($process.ExitCode -ne 0) { throw "Installer smoke test failed: $($process.ExitCode)" }
+          $installedExe = Join-Path $installDir 'WeChat-TXT-PDF-Exporter.exe'
+          if (-not (Test-Path -LiteralPath $installedExe)) { throw 'Installed executable is missing' }
+          $builtHash = (Get-FileHash -LiteralPath $builtExe -Algorithm SHA256).Hash
+          $installedHash = (Get-FileHash -LiteralPath $installedExe -Algorithm SHA256).Hash
+          if ($builtHash -ne $installedHash) { throw 'Installed executable hash does not match the build' }
+          $selfTestDir = Join-Path $env:RUNNER_TEMP 'installed-self-test'
+          $selfTest = Start-Process -FilePath $installedExe -ArgumentList @(
+            '--self-test-offline', $selfTestDir
+          ) -Wait -PassThru -WindowStyle Hidden
+          if ($selfTest.ExitCode -ne 0) { throw "Installed self-test failed: $($selfTest.ExitCode)" }
+          $receipt = Get-Content (Join-Path $selfTestDir 'self-test-result.json') -Raw | ConvertFrom-Json
+          if ($receipt.status -ne 'ok') { throw 'Installed self-test receipt is invalid' }
+
       - name: Publish GitHub release
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
@@ -70,26 +97,37 @@ jobs:
           $version = $tag.Substring(1)
           $packageVersion = (Select-String -Path pyproject.toml -Pattern '^version = "(.+)"$').Matches.Groups[1].Value
           if ($version -ne $packageVersion) { throw "Release tag does not match package version: $tag" }
-          $assets = @(
-            "dist/WeChat-TXT-PDF-Exporter-Installer-v$version.exe",
-            "dist/WeChat-TXT-PDF-Exporter-v$version.exe"
-          )
-          $checksumFile = "dist/SHA256SUMS-v$version.txt"
-          $checksums = foreach ($asset in $assets) {
-            $hash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()
-            "$hash  $(Split-Path $asset -Leaf)"
-          }
-          $checksums | Set-Content -LiteralPath $checksumFile -Encoding utf8
-          $assets += $checksumFile
+          $installer = "dist/WeChat-TXT-PDF-Exporter-Installer-v$version.exe"
+          $installedExe = "dist/WeChat-TXT-PDF-Exporter-v$version.exe"
+          $installedHash = (Get-FileHash -LiteralPath $installedExe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $installerHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          $installerSize = (Get-Item -LiteralPath $installer).Length
           $notesFile = Join-Path $env:RUNNER_TEMP "release-notes-$tag.md"
-          python scripts/render_release_notes.py --tag $tag --output $notesFile
+          python scripts/render_release_notes.py --tag $tag --output $notesFile --installed-exe-sha256 $installedHash
           if ($LASTEXITCODE -ne 0) { throw 'Release notes generation failed' }
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag @assets --clobber
+            gh release upload $tag $installer --clobber
             if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed' }
+            $installerName = Split-Path $installer -Leaf
+            $publishedAssets = @(gh release view $tag --json assets --jq '.assets[].name')
+            foreach ($assetName in $publishedAssets) {
+              if ($assetName -and $assetName -ne $installerName) {
+                gh release delete-asset $tag $assetName --yes
+                if ($LASTEXITCODE -ne 0) { throw "Failed to remove extra release asset: $assetName" }
+              }
+            }
             gh release edit $tag --title "微信聊天本地导出工具 v$version" --notes-file $notesFile --latest
           } else {
-            gh release create $tag @assets --verify-tag --title "微信聊天本地导出工具 v$version" --notes-file $notesFile --latest
+            gh release create $tag $installer --verify-tag --title "微信聊天本地导出工具 v$version" --notes-file $notesFile --latest
           }
           if ($LASTEXITCODE -ne 0) { throw 'GitHub release publication failed' }
+          $published = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$tag" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Published release could not be verified' }
+          $assets = @($published.assets)
+          if ($assets.Count -ne 1 -or $assets[0].name -ne (Split-Path $installer -Leaf)) {
+            throw 'Published release must contain exactly the one-click installer'
+          }
+          if ($assets[0].size -ne $installerSize -or $assets[0].digest -ne "sha256:$installerHash") {
+            throw 'Published installer size or SHA-256 digest does not match the local build'
+          }

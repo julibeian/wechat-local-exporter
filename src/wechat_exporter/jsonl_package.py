@@ -76,30 +76,19 @@ class ChatVideoLocator:
             elif any(len(name) >= 8 and name in filename for name in names):
                 partial.append(candidate)
         candidates = exact or partial
+        if not candidates:
+            return None
         if reference.size is not None:
             sized = []
-            for candidate in (candidates or list(files)):
+            for candidate in candidates:
                 try:
                     if candidate.stat().st_size == reference.size:
                         sized.append(candidate)
                 except OSError:
                     continue
-            if candidates and sized:
-                candidates = sized
-            elif not candidates:
-                month_names = {
-                    message.datetime.strftime("%Y-%m").casefold(),
-                    message.datetime.strftime("%Y%m").casefold(),
-                }
-                same_month = [
-                    candidate
-                    for candidate in sized
-                    if any(month in str(candidate).casefold() for month in month_names)
-                ]
-                if len(same_month) == 1:
-                    candidates = same_month
-                elif len(sized) == 1:
-                    candidates = sized
+            if not sized:
+                return None
+            candidates = sized
         if len(candidates) > 1:
             month = message.datetime.strftime("%Y-%m").casefold()
             candidates.sort(key=lambda path: (month not in str(path).casefold(), str(path)))
@@ -415,14 +404,10 @@ def _export_message_media(
         return [
             {
                 "kind": "card_cover",
-                "status": (
-                    "not_available_locally"
-                    if request.allow_network_media
-                    else "not_downloaded"
-                ),
+                "status": "not_downloaded",
                 "path": None,
                 "reason": (
-                    "卡片封面未在本机找到可可靠对应的缓存文件。"
+                    "未能从可用媒体地址取得卡片封面。"
                     if request.allow_network_media
                     else "默认不联网下载外部卡片封面。"
                 ),

@@ -106,6 +106,37 @@ def test_json_only_service_export_does_not_create_other_chat_formats(
     assert iterations == ["once"]
 
 
+def test_failed_json_export_removes_the_partial_transcript(tmp_path) -> None:
+    conversation = Conversation("wxid_friend", "好友")
+
+    class Archive:
+        self_wxid = "wxid_self"
+
+        def export_workload(self, *_args, **_kwargs):
+            return ExportWorkload(message_count=2)
+
+        def iter_messages(self, *_args, **_kwargs):
+            yield _message(1, "已经写入但不完整")
+            raise RuntimeError("database read failed")
+
+    service = ExporterService(AccountLocation(tmp_path / "account", "wxid_self", "test"))
+    service.archive = Archive()  # type: ignore[assignment]
+    output = tmp_path / "output"
+
+    with pytest.raises(RuntimeError, match="database read failed"):
+        service.export(
+            ExportRequest(
+                conversations=(conversation,),
+                output_dir=output,
+                include_json=True,
+                include_txt=False,
+                include_pdf=False,
+            )
+        )
+
+    assert not output.exists() or not list(output.rglob("*.json"))
+
+
 def test_export_request_defaults_to_exactly_one_fast_text_format(tmp_path) -> None:
     request = ExportRequest(
         conversations=(Conversation("wxid_friend", "好友"),),

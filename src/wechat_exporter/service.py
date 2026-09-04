@@ -424,7 +424,7 @@ class ExporterService:
                     result.file_conversations[pdf_writer.path] = conversation
                     result.file_categories[pdf_writer.path] = "chat"
                 result.message_counts[conversation.username] = count
-        except ExportCancelled:
+        except Exception:
             _cleanup_cancelled_files(created_files, created_directories)
             raise
         if request.include_wechat_voice_text and voice_count:

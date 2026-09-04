@@ -11,9 +11,10 @@ import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "render_release_notes.py"
 render_release_notes = runpy.run_path(str(SCRIPT))["render_release_notes"]
+INSTALLED_HASH = "a" * 64
 
 
-def test_cli_selects_exact_tag_and_builds_future_asset_links(tmp_path):
+def test_cli_selects_exact_tag_and_builds_one_installer_link(tmp_path):
     notes = tmp_path / "notes.md"
     notes.write_bytes((
         "# v12.34.50\r\n\r\nNeighbor release.\r\n\r\n"
@@ -22,46 +23,79 @@ def test_cli_selects_exact_tag_and_builds_future_asset_links(tmp_path):
     ).encode("utf-8"))
     output = tmp_path / "body.md"
     subprocess.run(
-        [sys.executable, str(SCRIPT), "--tag", "v12.34.5",
-         "--notes", str(notes), "--output", str(output)],
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--tag",
+            "v12.34.5",
+            "--notes",
+            str(notes),
+            "--output",
+            str(output),
+            "--installed-exe-sha256",
+            INSTALLED_HASH,
+        ],
         check=True,
     )
     body = output.read_text(encoding="utf-8")
     assert "当前更新。\n\n## 已知限制\n\n保留说明。" in body
-    assert body.endswith("缓存或配置兼容边界以本版本更新说明为准。\n")
-    assert "Windows DPAPI" in body
-    assert "不上传聊天数据" in body
+    assert "个人项目" in body
+    assert "不上传" in body
     assert "未知发布者" in body
+    assert "v1.3 及更早版本" in body
     assert "Neighbor release" not in body and "Older release" not in body
     links = re.findall(r"\]\((https://[^)]+/download/[^)]+)\)", body)
-    assert {link.rsplit("/", 1)[1] for link in links} == {
-        "WeChat-TXT-PDF-Exporter-Installer-v12.34.5.exe",
-        "WeChat-TXT-PDF-Exporter-v12.34.5.exe",
-        "SHA256SUMS-v12.34.5.txt",
-    }
-    assert all("/releases/download/v12.34.5/" in link for link in links)
+    assert [link.rsplit("/", 1)[1] for link in links] == [
+        "WeChat-TXT-PDF-Exporter-Installer-v12.34.5.exe"
+    ]
+    assert "/releases/download/v12.34.5/" in links[0]
+    assert "便携版" not in body and "SHA256SUMS" not in body
+    assert body.endswith(
+        f"<!-- wechat-exporter-target-sha256:{INSTALLED_HASH} -->\n"
+    )
     assert not output.read_bytes().startswith(b"\xef\xbb\xbf")
 
 
-def test_existing_release_does_not_link_to_unpublished_assets():
+def test_existing_release_links_only_to_the_installer():
     body = render_release_notes(
         "# v1.0.0\n\nOriginal notes.\n",
         "v1.0.0",
         ["WeChat-TXT-PDF-Exporter-Installer-v1.0.0.exe"],
+        installed_exe_sha256=INSTALLED_HASH.upper(),
     )
     assert body.count("/releases/download/") == 1
-    assert body.count("| 本版本未提供 |") == 2
     assert "Original notes." in body
-    assert body.endswith("缓存或配置兼容边界以本版本更新说明为准。\n")
+    assert f"target-sha256:{INSTALLED_HASH}" in body
 
 
-@pytest.mark.parametrize("tag, notes, assets", [
-    ("v1.3.0/../../bad", "# v1.3.0\nNotes", None),
-    ("v1.3.0", "# v1.3.1\nOther notes", None),
-    ("v1.3.0", "# v1.3.0\n\n# v1.2.0\nOlder notes", None),
-    ("v1.3.0", "# v1.3.0\nFirst\n# v1.3.0\nDuplicate", None),
-    ("v1.3.0", "# v1.3.0\nNotes", []),
-])
-def test_invalid_or_ambiguous_input_stops_publication(tag, notes, assets):
+def test_release_workflow_publishes_and_verifies_only_the_installer():
+    workflow = (SCRIPT.parents[1] / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "gh release upload $tag $installer --clobber" in workflow
+    assert "gh release create $tag $installer" in workflow
+    assert "Published release must contain exactly the one-click installer" in workflow
+    assert "SHA256SUMS" not in workflow
+
+
+@pytest.mark.parametrize(
+    "tag, notes, assets, installed_hash",
+    [
+        ("v1.3.0/../../bad", "# v1.3.0\nNotes", None, INSTALLED_HASH),
+        ("v1.3.0", "# v1.3.1\nOther notes", None, INSTALLED_HASH),
+        ("v1.3.0", "# v1.3.0\n\n# v1.2.0\nOlder notes", None, INSTALLED_HASH),
+        ("v1.3.0", "# v1.3.0\nFirst\n# v1.3.0\nDuplicate", None, INSTALLED_HASH),
+        ("v1.3.0", "# v1.3.0\nNotes", [], INSTALLED_HASH),
+        ("v1.3.0", "# v1.3.0\nNotes", None, "not-a-hash"),
+    ],
+)
+def test_invalid_or_ambiguous_input_stops_publication(
+    tag, notes, assets, installed_hash
+):
     with pytest.raises(ValueError):
-        render_release_notes(notes, tag, assets)
+        render_release_notes(
+            notes,
+            tag,
+            assets,
+            installed_exe_sha256=installed_hash,
+        )

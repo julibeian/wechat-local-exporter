@@ -72,7 +72,7 @@ class UpdatePlan:
 
 def stage_update(download: DownloadedUpdate) -> Path:
     if os.name != "nt" or not getattr(sys, "frozen", False):
-        raise UserFacingError("源码运行模式不替换 Python；请使用 Windows 安装版或便携版更新。")
+        raise UserFacingError("源码运行模式不替换 Python；自动更新仅用于 Windows 安装版。")
     current = Path(sys.executable).resolve()
     if (
         download.kind != installation_kind(current)

@@ -18,6 +18,9 @@ def test_local_build_installs_by_default_and_package_only_is_explicit() -> None:
     assert "[switch]$ForceStopInstalled" in script
     assert "$installAfterBuild = $Install -or (-not $PackageOnly -and -not $isCi)" in script
     assert "if (-not $installAfterBuild)" in script
+    assert "SHA256SUMS" not in script
+    assert "Remove-Item -LiteralPath $portable" in script
+    assert "self-test-result.json" in script
     assert "CloseMainWindow" not in script
     assert UPDATE_EXIT_EVENT_NAME in script
     assert "/NOCLOSEAPPLICATIONS" in script
@@ -34,6 +37,9 @@ def test_local_build_installs_by_default_and_package_only_is_explicit() -> None:
     assert '#define DesktopShortcutName "微信聊天本地导出工具"' in installer
     assert 'Name: "{autodesktop}\\{#DesktopShortcutName}"' in installer
     assert 'Name: "{autodesktop}\\微信聊天 TXT-PDF 导出.lnk"' in installer
+    assert '#define InstalledExeSHA256 GetSHA256OfFile' in installer
+    assert "GetSHA256OfFile(ExpandConstant('{app}\\{#AppExeName}'))" in installer
+    assert "Installed executable failed SHA-256 verification" in installer
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows desktop shortcut behavior")

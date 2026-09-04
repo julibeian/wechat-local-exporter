@@ -38,6 +38,7 @@ if ($LASTEXITCODE -ne 0) {
 
 $version = (Select-String -Path "pyproject.toml" -Pattern '^version = "(.+)"$').Matches.Groups[1].Value
 $portable = (Resolve-Path "dist\WeChat-TXT-PDF-Exporter-v$version.exe").Path
+$packagedHash = (Get-FileHash -LiteralPath $portable -Algorithm SHA256).Hash
 $selfTestDir = Join-Path $PWD "tmp\package-self-test"
 $process = Start-Process `
     -FilePath $portable `
@@ -48,6 +49,10 @@ $process = Start-Process `
 if ($process.ExitCode -ne 0) {
     throw "Packaged self-test failed: $($process.ExitCode)"
 }
+$selfTestReceipt = Get-Content (Join-Path $selfTestDir "self-test-result.json") -Raw | ConvertFrom-Json
+if ($selfTestReceipt.status -ne "ok") {
+    throw "Packaged self-test did not produce a valid receipt."
+}
 & $Python "scripts\verify_packaged_update.py" $portable
 if ($LASTEXITCODE -ne 0) { throw "Packaged updater smoke test failed." }
 
@@ -57,7 +62,7 @@ $iscc = @(
     "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
 ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 if (-not $iscc) {
-    throw "Inno Setup 6 is required to build the installer."
+    throw "Inno Setup 6.4 or newer is required to build the installer."
 }
 & $iscc "/DAppVersion=$version" "packaging\installer.iss"
 if ($LASTEXITCODE -ne 0) {
@@ -65,13 +70,10 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $installer = (Resolve-Path "dist\WeChat-TXT-PDF-Exporter-Installer-v$version.exe").Path
-$checksums = foreach ($asset in @($installer, $portable)) {
-    $hash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()
-    "$hash  $(Split-Path $asset -Leaf)"
-}
-$checksums | Set-Content -LiteralPath "dist\SHA256SUMS-v$version.txt" -Encoding utf8
 if (-not $installAfterBuild) {
-    Write-Host "Package build complete; the desktop installation and shortcut were not updated."
+    Remove-Item -LiteralPath $portable
+    Write-Host "One-click installer build complete; the desktop installation and shortcut were not updated."
+    Get-FileHash -LiteralPath $installer -Algorithm SHA256
     return
 }
 $installDir = Join-Path $env:LOCALAPPDATA "Programs\WeChatChatExporter"
@@ -116,9 +118,8 @@ if ($runningExporters.Count -gt 0) {
 $installProcess = Start-Process -FilePath $installer -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCLOSEAPPLICATIONS', '/SP-') -Wait -PassThru -WindowStyle Hidden
 if ($installProcess.ExitCode -ne 0) { throw "Installer failed: $($installProcess.ExitCode)" }
 
-$portableHash = (Get-FileHash -LiteralPath $portable -Algorithm SHA256).Hash
 $installedHash = (Get-FileHash -LiteralPath $installedExe -Algorithm SHA256).Hash
-if ($portableHash -ne $installedHash) {
+if ($packagedHash -ne $installedHash) {
     throw "Installed executable does not match the packaged executable."
 }
 
@@ -126,8 +127,5 @@ if ($portableHash -ne $installedHash) {
     -TargetPath $installedExe `
     -WorkingDirectory $installDir
 
-Get-FileHash `
-    $portable, `
-    $installer, `
-    $installedExe `
-    -Algorithm SHA256
+Remove-Item -LiteralPath $portable
+Get-FileHash $installer, $installedExe -Algorithm SHA256

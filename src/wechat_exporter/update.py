@@ -25,6 +25,10 @@ MAX_METADATA = 2 * 1024 * 1024
 MAX_DOWNLOAD = 2 * 1024**3
 _VERSION = re.compile(r"v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\Z")
 _SHA256 = re.compile(r"[a-fA-F0-9]{64}\Z")
+_TARGET_SHA256 = re.compile(
+    r"<!--\s*wechat-exporter-target-sha256:([a-fA-F0-9]{64})\s*-->",
+    flags=re.ASCII,
+)
 _HOSTS = {"api.github.com", "github.com", "release-assets.githubusercontent.com",
           "objects.githubusercontent.com"}
 
@@ -58,6 +62,7 @@ def open_url(url: str, *, timeout: float = 8):
     request = Request(_https_url(url), headers={
         "User-Agent": f"WeChatChatExporter/{__version__}",
         "Accept": "application/vnd.github+json" if "api.github.com/" in url else "application/octet-stream",
+        "X-GitHub-Api-Version": "2022-11-28",
     })
     return build_opener(_SafeRedirect()).open(request, timeout=timeout)
 
@@ -75,6 +80,7 @@ class Asset:
     name: str
     url: str
     size: int
+    sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -83,6 +89,7 @@ class Release:
     published_at: str
     notes: str
     assets: tuple[Asset, ...] = ()
+    target_sha256: str = ""
 
     def asset(self, kind: str) -> Asset | None:
         if kind not in {"installer", "portable", "checksum"}:
@@ -131,38 +138,88 @@ class GitHubSource:
             notes, published = entry.get("body") or "", entry.get("published_at") or ""
             if not isinstance(notes, str) or not isinstance(published, str):
                 raise ValueError("版本说明格式无效")
+            target_hashes = _TARGET_SHA256.findall(notes)
+            if len(target_hashes) > 1 or (
+                "wechat-exporter-target-sha256" in notes and len(target_hashes) != 1
+            ):
+                raise ValueError("更新后的程序摘要格式无效")
+            target_sha256 = target_hashes[0].lower() if target_hashes else ""
             assets = []
             for a in entry.get("assets", []):
                 if not isinstance(a, dict):
                     raise ValueError("更新文件信息无效")
-                name, download_url, size = a.get("name"), a.get("browser_download_url"), a.get("size")
-                if not isinstance(name, str) or not isinstance(download_url, str) or type(size) is not int:
+                name = a.get("name")
+                download_url = a.get("browser_download_url")
+                size = a.get("size")
+                digest = a.get("digest")
+                state = a.get("state")
+                if (not isinstance(name, str) or not isinstance(download_url, str)
+                        or type(size) is not int):
                     raise ValueError("更新文件信息无效")
+                if state != "uploaded":
+                    continue
+                if digest is None:
+                    sha256 = ""
+                elif (
+                    isinstance(digest, str)
+                    and digest.startswith("sha256:")
+                    and _SHA256.fullmatch(digest[7:])
+                ):
+                    sha256 = digest[7:].lower()
+                else:
+                    raise ValueError("更新文件摘要格式无效")
                 # Only release files in this repository; remote names never become arbitrary paths.
                 if (download_url != f"{PROJECT_URL}/releases/download/{tag}/{name}"
                         or Path(name).name != name or "/" in name or "\\" in name
                         or not 0 < size <= MAX_DOWNLOAD):
                     continue
                 _https_url(download_url)
-                assets.append(Asset(name, download_url, size))
-            result.append(Release(version, published[:10], notes[:100_000], tuple(assets)))
+                assets.append(Asset(name, download_url, size, sha256))
+            result.append(
+                Release(
+                    version,
+                    published[:10],
+                    notes[:100_000],
+                    tuple(assets),
+                    target_sha256,
+                )
+            )
         if not result:
             raise ValueError("未取得正式版本信息")
         return tuple(sorted(result, key=lambda r: version_tuple(r.version), reverse=True))
 
     def download(self, release: Release, kind: str, *, progress=None,
                  cancelled: threading.Event | None = None) -> DownloadedUpdate:
-        asset, checksum = release.asset(kind), release.asset("checksum")
-        if asset is None or checksum is None:
-            raise UserFacingError("该版本缺少安装文件或 SHA256 清单，暂不能安全更新。")
+        asset = release.asset(kind)
+        if asset is None:
+            raise UserFacingError("该版本缺少可用的更新文件。")
         directory = None
         try:
-            manifest = _read_bounded(checksum.url, self.opener, 64 * 1024).decode("utf-8-sig")
-            expected = checksum_for(manifest, asset.name)
+            expected = asset.sha256
             target_asset = release.asset("portable")
-            if target_asset is None:
-                raise UserFacingError("该版本缺少主程序校验信息，暂不能安全更新。")
-            target_expected = checksum_for(manifest, target_asset.name)
+            target_expected = (
+                release.target_sha256
+                if kind == "installer"
+                else expected if kind == "portable" else ""
+            )
+            if kind == "installer" and not target_expected and target_asset is not None:
+                target_expected = target_asset.sha256
+            if not expected:
+                checksum = release.asset("checksum")
+                if checksum is None:
+                    raise UserFacingError("该版本缺少 SHA256 校验信息，暂不能安全更新。")
+                manifest = _read_bounded(
+                    checksum.url, self.opener, 64 * 1024
+                ).decode("utf-8-sig")
+                expected = checksum_for(manifest, asset.name)
+                if kind == "portable":
+                    target_expected = expected
+                elif target_asset is not None and not target_expected:
+                    target_expected = checksum_for(manifest, target_asset.name)
+            if kind == "installer" and not target_expected:
+                raise UserFacingError(
+                    "该版本缺少安装后程序的 SHA256 校验信息，暂不能安全更新。"
+                )
             self.download_root.mkdir(parents=True, exist_ok=True)
             directory = Path(tempfile.mkdtemp(prefix="update-", dir=self.download_root))
             partial = directory / (asset.name + ".part")

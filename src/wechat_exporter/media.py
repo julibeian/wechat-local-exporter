@@ -199,6 +199,7 @@ class MediaResolver:
         with self._stats_lock:
             self.stats.requested += 1
         cache_key = (
+            message.conversation_id,
             reference.kind,
             reference.md5,
             reference.aes_key,

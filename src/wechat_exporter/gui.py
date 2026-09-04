@@ -1222,7 +1222,7 @@ class ExporterApp:
         ttk.Label(self.video_limit_frame, text="MB").pack(side="left")
         ttk.Checkbutton(
             package_row,
-            text="联网补全可用表情",
+            text="联网补全表情和卡片封面",
             variable=self.package_network_var,
         ).pack(side="left")
 
@@ -1603,8 +1603,8 @@ class ExporterApp:
                 if self.package_include_videos_var.get()
                 else "不包含视频"
             )
-            network = "允许微信官方媒体地址补全" if self.package_network_var.get() else "仅使用本机媒体"
-            return f"将为 {target} 各生成一个 JSONL + 媒体 ZIP（{date_text}；{video}；{network}；语音仅存微信转录）。"
+            network = "允许联网补全表情和卡片封面" if self.package_network_var.get() else "仅使用本机媒体"
+            return f"将为 {target} 各生成一个内含 JSONL 和媒体的 ZIP（{date_text}；{video}；{network}；语音仅存微信转录）。"
         if task == "chat_files":
             count = sum(variable.get() for variable in self.chat_file_category_vars.values())
             return f"将批量导出 {target} 在 {date_text} 内的 {count} 类普通文件；单个上限 {self.chat_file_limit_var.get()} MB。"

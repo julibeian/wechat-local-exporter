@@ -367,6 +367,10 @@ def test_advanced_package_dispatch_uses_confirmed_safe_defaults(app, monkeypatch
     assert request.include_videos is True
     assert request.max_video_size_bytes == 100 * 1024 * 1024
     assert request.allow_network_media is False
+    app.package_network_var.set(True)
+    assert "联网补全表情和卡片封面" in app._confirmation_summary(
+        "jsonl_package", (Conversation("wxid_friend", "好友"),)
+    )
 
 
 def test_chat_file_dialog_defaults_to_all_categories_and_100_mb(app):
@@ -414,7 +418,17 @@ def test_gui_direct_connection_has_no_modal(app, tmp_path, monkeypatch):
 
 def test_update_banner_and_offline_history_stay_inside_ui(app, monkeypatch):
     controller = app.updates
-    controller.manager.result = CheckResult("available", "2.0.0", (Release("2.0.0", "2026-09-01", "新增功能"),))
+    controller.manager.result = CheckResult(
+        "available",
+        "2.0.0",
+        (
+            Release(
+                "2.0.0",
+                "2026-09-01",
+                "新增功能\n<!-- wechat-exporter-target-sha256:" + "a" * 64 + " -->",
+            ),
+        ),
+    )
     controller.refresh()
     assert controller.banner.winfo_manager() == "pack"
     controller.dismiss()
@@ -422,6 +436,7 @@ def test_update_banner_and_offline_history_stay_inside_ui(app, monkeypatch):
     assert "2.0.0" in controller.status.get()
     controller.show()
     assert "新增功能" in controller.notes.get("1.0", "end")
+    assert "target-sha256" not in controller.notes.get("1.0", "end")
     assert controller.dialog_current.get() == "v1.5.0"
     assert controller.dialog_latest.get() == "v2.0.0"
     assert controller.release_heading.get() == "v2.0.0"
@@ -430,7 +445,7 @@ def test_update_banner_and_offline_history_stay_inside_ui(app, monkeypatch):
     controller.refresh()
     assert controller.release_heading.get() == "v1.5.0"
     assert controller.release_list.size() >= 2
-    assert "A 分组" in controller.notes.get("1.0", "end")
+    assert "JSONL" in controller.notes.get("1.0", "end")
 
 
 def test_header_hides_update_status_and_exposes_github_link(app, monkeypatch):

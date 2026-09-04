@@ -30,6 +30,7 @@ def _plain_release_notes(notes: str) -> str:
     """Keep release content readable in a plain Tk text view."""
 
     normalized = notes.replace("\r\n", "\n").strip()
+    normalized = re.sub(r"<!--.*?-->", "", normalized, flags=re.DOTALL)
     marker = "\n## 更新内容\n"
     if marker in normalized:
         normalized = normalized.split(marker, 1)[1].strip()
@@ -237,7 +238,7 @@ class UpdateController:
         self.download_button = ttk.Button(buttons, text="下载并更新", command=self.start_download)
         self.download_button.pack(side="right")
         if installation_kind() == "source":
-            self.download_status.set("源码运行模式仅查看更新；自动安装用于 Windows 安装版和便携版。")
+            self.download_status.set("源码运行模式仅查看更新；自动安装仅用于 Windows 安装版。")
         self.refresh()
         if not self.manager.result.releases:
             self.check(False)

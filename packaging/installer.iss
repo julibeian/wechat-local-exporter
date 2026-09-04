@@ -7,6 +7,7 @@
 #define AppURL "https://github.com/julibeian/wechat-txt-pdf-exporter"
 #define AppExeName "WeChat-TXT-PDF-Exporter.exe"
 #define ReleaseExeName "WeChat-TXT-PDF-Exporter-v" + AppVersion + ".exe"
+#define InstalledExeSHA256 GetSHA256OfFile("..\dist\" + ReleaseExeName)
 #define DesktopShortcutName "微信聊天本地导出工具"
 
 [Setup]
@@ -52,3 +53,16 @@ Name: "{autodesktop}\{#DesktopShortcutName}"; Filename: "{app}\{#AppExeName}"
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "立即启动 {#AppName}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+  begin
+    if CompareText(
+      GetSHA256OfFile(ExpandConstant('{app}\{#AppExeName}')),
+      '{#InstalledExeSHA256}'
+    ) <> 0 then
+      RaiseException('Installed executable failed SHA-256 verification.');
+  end;
+end;
