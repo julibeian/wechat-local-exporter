@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .config import LocalConfig
 from .crypto import collect_required_databases
+from .database_cache import AccountDatabaseCache
 from .errors import UserFacingError
 from .key_capture import capture_keys_during_wechat_start, prepare_key_capture
 from .models import AccountLocation
@@ -66,7 +67,16 @@ class ConnectionManager:
                 if progress:
                     progress("正在确认当前微信进程使用的账号...", 0.05)
                 if not list_wechat_processes():
-                    raise RestartRequired("微信尚未运行，需要启动微信后连接。")
+                    cached_account = self._last_confirmed_account()
+                    if cached_account is None:
+                        raise RestartRequired("微信尚未运行且没有可用账号缓存，需要启动微信后连接。")
+                    service = ExporterService(cached_account)
+                    service.connect_from_saved_cache(progress=progress)
+                    self.config.set(
+                        last_account_wxid=cached_account.wxid,
+                        last_db_path=str(cached_account.db_dir.resolve()),
+                    )
+                    return service
                 running = resolve_running_account()
                 if running is None:
                     raise UserFacingError("尚未确认当前登录账号。请完成微信登录；若同时登录了多个账号，请只保留需要导出的账号后重试。")
@@ -97,7 +107,13 @@ class ConnectionManager:
                 self._verify_current(running)
                 # Only now create the account-bound service. Never reuse A after login B.
                 service = ExporterService(running.account, process_id=running.pid)
-                service._prepare(keys, progress=progress, calibrations=None)
+                service._prepare(
+                    keys,
+                    progress=progress,
+                    calibrations=None,
+                    database_cache=AccountDatabaseCache(service.account),
+                    save_cached_keys=True,
+                )
             self._verify_current(running)
             self.config.set(last_account_wxid=running.account.wxid,
                             last_db_path=str(running.account.db_dir.resolve()))
@@ -106,6 +122,24 @@ class ConnectionManager:
             if service is not None:
                 service.close()
             raise
+
+    def _last_confirmed_account(self) -> AccountLocation | None:
+        wxid = str(self.config.get("last_account_wxid", "")).strip()
+        db_path = str(self.config.get("last_db_path", "")).strip()
+        if not wxid or not db_path:
+            return None
+        try:
+            account = account_from_path(Path(db_path), "本机缓存")
+            if account.wxid != wxid:
+                return None
+            if not all(
+                (account.db_dir / folder / f"{folder}.db").is_file()
+                for folder in ("contact", "session")
+            ):
+                return None
+            return account
+        except (OSError, ValueError):
+            return None
 
     @staticmethod
     def _verify_current(running: RunningAccount) -> None:

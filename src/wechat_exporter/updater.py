@@ -29,8 +29,14 @@ def installation_kind(executable: Path | None = None) -> str:
     return "installer" if executable.name == STABLE_EXE and (executable.parent / "unins000.exe").is_file() else "portable"
 
 
+def _valid_sha256(expected: str) -> bool:
+    return len(expected) == 64 and all(
+        character in "0123456789abcdefABCDEF" for character in expected
+    )
+
+
 def verified(path: Path, expected: str) -> bool:
-    if len(expected) != 64:
+    if not _valid_sha256(expected):
         return False
     with path.open("rb") as stream:
         actual = hashlib.file_digest(stream, "sha256").hexdigest()
@@ -57,6 +63,7 @@ def _launch(executable: Path, *args: str):
 class UpdatePlan:
     payload: str
     sha256: str
+    target_sha256: str
     target: str
     kind: str
     version: str
@@ -67,7 +74,11 @@ def stage_update(download: DownloadedUpdate) -> Path:
     if os.name != "nt" or not getattr(sys, "frozen", False):
         raise UserFacingError("源码运行模式不替换 Python；请使用 Windows 安装版或便携版更新。")
     current = Path(sys.executable).resolve()
-    if download.kind != installation_kind(current) or not verified(download.path, download.sha256):
+    if (
+        download.kind != installation_kind(current)
+        or not verified(download.path, download.sha256)
+        or not _valid_sha256(download.target_sha256)
+    ):
         raise UserFacingError("更新文件未通过安装前检查，当前版本保持不变。")
     # Every retry gets its own ready/abort files; a slow previous helper must
     # never mistake a later attempt's consent for its own.
@@ -76,8 +87,15 @@ def stage_update(download: DownloadedUpdate) -> Path:
     shutil.copy2(download.path, payload)
     helper = directory / "update-runner.exe"
     plan_path = directory / "plan.json"
-    plan = UpdatePlan(str(payload.resolve()), download.sha256, str(current),
-                      download.kind, download.version, os.getpid())
+    plan = UpdatePlan(
+        str(payload.resolve()),
+        download.sha256,
+        download.target_sha256,
+        str(current),
+        download.kind,
+        download.version,
+        os.getpid(),
+    )
     shutil.copy2(current, helper)
     plan_path.write_text(json.dumps(asdict(plan)), encoding="utf-8")
     _launch(helper, "--apply-update", str(plan_path))
@@ -88,6 +106,7 @@ def apply_update(plan: UpdatePlan, *, launch=_launch) -> None:
     """Called only after the old process exits. Kept separate for failure tests."""
     payload, target = Path(plan.payload), Path(plan.target)
     if (plan.kind not in {"installer", "portable"} or not verified(payload, plan.sha256)
+            or not _valid_sha256(plan.target_sha256)
             or target.suffix.lower() != ".exe" or not target.is_file()
             or payload.resolve() == target.resolve()):
         raise UserFacingError("安装前校验失败，原程序未被替换。")
@@ -104,6 +123,8 @@ def apply_update(plan: UpdatePlan, *, launch=_launch) -> None:
             changed = True
             if process.wait() != 0:
                 raise UserFacingError("安装程序未成功完成，已尝试恢复原程序。")
+            if not verified(target, plan.target_sha256):
+                raise UserFacingError("安装后的主程序校验失败，已尝试恢复原程序。")
         else:
             # Copy beside target first: atomic replacement also works across volumes.
             staging = target.with_name(target.name + ".update-new")
@@ -111,7 +132,7 @@ def apply_update(plan: UpdatePlan, *, launch=_launch) -> None:
                 raise UserFacingError("发现上次未完成的更新文件，请检查后重试。")
             try:
                 shutil.copy2(payload, staging)
-                if not verified(staging, plan.sha256):
+                if not verified(staging, plan.target_sha256):
                     raise UserFacingError("替换前校验失败，原程序保持不变。")
                 os.replace(staging, target)
                 changed = True
@@ -183,7 +204,8 @@ def run_helper(plan_path: Path) -> int:
         if (plan.kind not in {"installer", "portable"} or type(plan.parent_pid) is not int
                 or plan.parent_pid <= 0 or Path(plan.payload).resolve().parent != directory
                 or Path(plan.target).resolve().parent == directory
-                or not verified(Path(plan.payload), plan.sha256)):
+                or not verified(Path(plan.payload), plan.sha256)
+                or not _valid_sha256(plan.target_sha256)):
             return 2
         if not _wait_for_parent(plan, directory):
             return 3

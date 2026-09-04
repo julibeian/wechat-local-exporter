@@ -27,7 +27,11 @@ def test_cli_selects_exact_tag_and_builds_future_asset_links(tmp_path):
         check=True,
     )
     body = output.read_text(encoding="utf-8")
-    assert body.endswith("当前更新。\n\n## 已知限制\n\n保留说明。\n")
+    assert "当前更新。\n\n## 已知限制\n\n保留说明。" in body
+    assert body.endswith("缓存或配置兼容边界以本版本更新说明为准。\n")
+    assert "Windows DPAPI" in body
+    assert "不上传聊天数据" in body
+    assert "未知发布者" in body
     assert "Neighbor release" not in body and "Older release" not in body
     links = re.findall(r"\]\((https://[^)]+/download/[^)]+)\)", body)
     assert {link.rsplit("/", 1)[1] for link in links} == {
@@ -47,7 +51,8 @@ def test_existing_release_does_not_link_to_unpublished_assets():
     )
     assert body.count("/releases/download/") == 1
     assert body.count("| 本版本未提供 |") == 2
-    assert body.endswith("Original notes.\n")
+    assert "Original notes." in body
+    assert body.endswith("缓存或配置兼容边界以本版本更新说明为准。\n")
 
 
 @pytest.mark.parametrize("tag, notes, assets", [

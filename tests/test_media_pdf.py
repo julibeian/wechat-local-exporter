@@ -80,6 +80,46 @@ def test_media_references_cover_normal_images_and_emoticons() -> None:
     assert emoticon.kind == "emoticon"
     assert emoticon.cdn_url.endswith("a=1&b=2")
 
+    video = extract_media_reference(
+        43,
+        '<msg><videomsg md5="cccccccccccccccccccccccccccccccc" '
+        'length="2048" playlength="12.5" cdnvideourl="https://vweixinf.tc.qq.com/v.mp4"/></msg>',
+    )
+    assert video == MediaReference(
+        kind="video",
+        md5="c" * 32,
+        cdn_url="https://vweixinf.tc.qq.com/v.mp4",
+        size=2048,
+        duration_seconds=12.5,
+    )
+
+
+def test_local_only_media_resolver_never_calls_the_network(tmp_path) -> None:
+    calls = []
+    resolver = MediaResolver(
+        AccountLocation(tmp_path / "account", "wxid_self", "test"),
+        "wxid_self",
+        allow_network=False,
+        download=lambda url: calls.append(url) or b"unexpected",
+    )
+    message = Message(
+        1,
+        1_788_330_000,
+        47,
+        "wxid_friend",
+        "好友",
+        False,
+        "[动画表情]",
+        conversation_id="wxid_friend",
+        media=MediaReference(
+            "emoticon",
+            md5="d" * 32,
+            cdn_url="https://mmbiz.qpic.cn/emoji",
+        ),
+    )
+    assert resolver.resolve(message) is None
+    assert calls == []
+
 
 def test_v2_image_decrypt_is_byte_exact() -> None:
     plaintext = _png_bytes()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -49,6 +50,66 @@ def test_export_history_round_trip_keeps_time_and_file_address(tmp_path: Path) -
     assert loaded[0].conversation_type == "联系人"
     assert loaded[0].file_format == "TXT"
     assert loaded[0].message_count == 23
+    assert loaded[0].export_category == "chat"
+
+
+def test_history_distinguishes_chat_file_zip_and_reads_old_rows(tmp_path: Path) -> None:
+    history_path = tmp_path / "export_history.json"
+    conversation = Conversation("room@chatroom", "课程群", is_group=True)
+    exported_file = tmp_path / "课程群_聊天文件_20260901-20260902.zip"
+    exported_file.write_bytes(b"zip")
+    result = ExportResult(
+        files=[exported_file],
+        file_conversations={exported_file: conversation},
+        file_categories={exported_file: "chat_files"},
+        message_counts={conversation.username: 8},
+    )
+    append_export_history(result, account_wxid="wxid_self", path=history_path)
+    assert load_export_history(history_path)[0].export_category == "chat_files"
+
+    old_path = tmp_path / "old_history.json"
+    old_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": [
+                    {
+                        "exported_at": "2026-08-01T10:00:00+08:00",
+                        "conversation_name": "好友",
+                        "conversation_type": "联系人",
+                        "file_format": "HTML",
+                        "file_path": str(tmp_path / "好友_朋友圈离线归档" / "index.html"),
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    loaded_old = load_export_history(old_path)
+    assert loaded_old[0].export_category == "moments"
+
+    package_path = tmp_path / "好友_完整聊天资料_全部日期.zip"
+    package_history = tmp_path / "package_history.json"
+    package_history.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": [
+                    {
+                        "exported_at": "2026-09-03T08:00:00+08:00",
+                        "conversation_name": "好友",
+                        "conversation_type": "联系人",
+                        "file_format": "ZIP",
+                        "file_path": str(package_path),
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    assert load_export_history(package_history)[0].export_category == "chat_package"
 
 
 def test_personal_signature_detects_tampering() -> None:

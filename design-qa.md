@@ -1,55 +1,59 @@
-# Star 横幅位置与选择列表伸展：视觉 QA
+# 递进式导出界面：设计与行为 QA
 
-- source visual truth: `C:\Users\Lenovo\AppData\Local\Temp\codex-clipboard-d9b2446a-2d78-466c-933e-39d2851ab5cc.png`
-- implementation, Star visible: `C:\Users\Lenovo\Documents\ChatGPT\家教\tmp\design-qa\star-visible-export-bottom-final.png`
-- implementation, Star dismissed: `C:\Users\Lenovo\Documents\ChatGPT\家教\tmp\design-qa\star-hidden-expanded-list-final.png`
-- normalized comparison: `C:\Users\Lenovo\Documents\ChatGPT\家教\tmp\design-qa\source-vs-implementation-final.png`
-- viewport: Windows maximized desktop window
-- source pixels: 2559 × 1494
-- implementation capture: 2560 × 1529, including 35 px system title bar
-- normalized implementation: crop 2559 × 1494 from y=35; no density resampling
-- state: Star visible in the export-area footer, followed by Star dismissed
+## 信息结构
 
-## Full-view comparison evidence
+主界面只保留三个顶层区域：连接微信、选择对象、递进导出。导出历史移到标题区，原先占据主流程的蓝色说明和四个并列动作按钮已移除。
 
-The requested red-box region below the export action buttons now contains the full-width Star banner. The connection and chooser sections retain the existing product typography, colors, borders, and spacing. The status/progress row remains outside and below the export panel.
+导出区域按以下顺序展开：
 
-After the close button is activated, the banner and its grid padding collapse. The vertical pane sash moves downward by the reclaimed height, so the chooser displays additional group/contact rows while the export controls remain fully visible.
+1. 选择任务。
+2. 选择时间（朋友圈跳过）。
+3. 选择当前任务的格式或内容设置。
+4. 选择保存位置。
+5. 阅读确认摘要并使用唯一的主导出按钮。
 
-## Focused region comparison evidence
+未选择对象时不显示任务菜单；未选择任务时不显示日期、格式、保存位置和确认区域。运行导出后才显示“取消导出”。
 
-- Export footer: Star text, blue action, dismiss action, and right-aligned close affordance are unchanged; only the host location changes from above section 1 to below the export actions.
-- Chooser height: the visible-Star state preserves the original sash height when space permits. In the dismissed state, the chooser bottom moves down by the banner's reclaimed height and exposes the following P/X rows in the preview data.
-- The focused regions were inspected at the same maximized viewport because the requested behavior depends on the relationship between the two panes rather than an isolated component.
+首次载入完整会话列表时，默认选择 A 分组中的第一个联系人；A 分组不存在时顺延到后续分组中的第一个联系人。默认任务为该对象的第一个可用任务，因此普通联系人会直接展开“聊天文字”的后续设置。该默认选择只执行一次，搜索和类型筛选不会反复抢占用户选择。
 
-## Required fidelity surfaces
+## 对象与任务关系
 
-- Fonts and typography: existing Microsoft YaHei UI hierarchy, weights, and sizes are preserved.
-- Spacing and layout rhythm: banner is placed after the export action row with a small top gap; closing it removes both banner and gap. No persistent empty placeholder remains.
-- Colors and visual tokens: existing blue/white Star banner and neutral application palette are preserved.
-- Image quality and asset fidelity: no raster image assets are used or replaced in this desktop UI.
-- Copy and content: existing Star invitation, action labels, estimates, and export copy are unchanged.
+| 所选对象 | 聊天文字 | AI 完整资料包 | 批量聊天文件 | 朋友圈归档 |
+|---|---:|---:|---:|---:|
+| 我自己 |  |  |  | 可用 |
+| 单个联系人 | 可用 | 可用 | 可用 | 可用 |
+| 单个群聊 | 可用 | 可用 | 可用 |  |
+| 多个联系人/群聊 | 可用 | 可用 | 可用 |  |
+| 我自己与其他对象混选 |  |  |  |  |
 
-## Findings
+## 条件展开检查
 
-No actionable P0, P1, or P2 differences remain for the requested change.
+- 普通聊天使用 JSON、TXT、PDF 单选按钮，一次只生成一种格式。
+- PDF 未选中时，快速版/完整版区域从布局中消失；隐藏值被清零，不会进入请求参数。
+- AI 完整资料包只显示视频、单视频上限和可选联网表情补全设置。
+- 批量聊天文件只显示文件类型与普通附件大小上限，不再额外弹出二级设置窗口。
+- 朋友圈不显示聊天日期、聊天格式或媒体资料包设置。
+- 确认摘要会复述对象、时间、格式/策略和关键大小边界。
 
-## Comparison history
+## 干扰项处理
 
-1. Initial implementation placed the banner correctly but recalculated both pane sizes from requested heights, which shortened the chooser in the visible-Star state more than necessary (P2).
-2. The layout was revised to preserve the existing sash while the banner is visible, shrink it only when required for minimum export height, and transfer only the dismissed banner's measured height to the chooser.
-3. Post-fix evidence shows the banner in the requested export footer and additional chooser rows immediately after dismissal.
+连接后的 GitHub Star 弹窗、延时器、宿主容器和关闭后重新分配窗格高度的代码已从当前运行时移除。历史版本说明仍保留其历史记录，不代表当前版本会显示该弹窗。
 
-## Interactions checked
+## 自动验证
 
-- Maximized-window layout.
-- Star close button.
-- Immediate chooser-height expansion after close.
-- Export buttons and status row remain visible.
-- Browser console: not applicable to the native Tkinter desktop application.
+- 900×800 与 1060×900 窗口中，连接、任务、日期、主导出按钮和进度条均保持在可见范围。
+- 已覆盖联系人、群聊、本人和混选对象的任务资格。
+- 已覆盖 PDF 条件显示、隐藏参数清零、普通格式单选请求和高级资料包默认安全设置。
+- 已覆盖运行时取消按钮的出现、取消恢复和迟到事件隔离。
+- 已覆盖真实冷启动映射后联系人窗格高度，不再依赖测试手工重设分隔条。
+- 已覆盖 900×800 与 1060×900 下四种任务及 JSON/TXT/PDF 子格式切换；联系人区、导出区和固定宽度主按钮的坐标均不改变，PDF 二级选项仍位于固定区域内。
+- 已覆盖窗口关闭后进入托盘、托盘点击恢复，以及隐藏状态下导出完成和失败均改用系统通知而不弹出阻塞对话框。
+- 已覆盖 Win32 托盘通知从真实显示事件开始计时，并在 3000 毫秒后主动收回；通知点击事件使用正确的 `WM_USER` 消息值。
+- 已覆盖托盘右键真正退出、导出中拒绝/确认退出、外部更新等待活跃任务，以及通知点击恢复窗口。
+- 已覆盖 Windows 单实例互斥、第二次启动唤回、PowerShell 本地构建退出事件和互斥释放后重新启动。
+- 已覆盖安装包与最终主程序使用不同 SHA-256、安装器误报成功时回滚，以及本地构建不再调用会缩到托盘的 `CloseMainWindow()`。
+- 已覆盖账号密钥的 DPAPI 往返与账号隔离校验、数据库未变化时复用快照，以及源数据库变化后仅刷新对应缓存。
+- 已覆盖默认 A 组联系人、无 A 组顺延联系人、默认聊天任务及统一使用说明窗口。
+- 已覆盖版本窗口的状态区、版本列表、单版本说明，以及未来 GitHub 正式版本仍触发非阻塞更新提示。
 
-## Follow-up polish
-
-No P3 follow-up is required for this scoped change.
-
-final result: passed
+最终结果：通过。

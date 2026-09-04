@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import zstandard
 
-from wechat_exporter.content import decode_database_content, parse_message_text
+from wechat_exporter.content import (
+    app_message_semantic_type,
+    decode_database_content,
+    extract_message_details,
+    parse_message_text,
+)
 
 
 def test_plain_text_that_looks_encoded_is_preserved() -> None:
@@ -27,6 +32,11 @@ def test_wechat_official_voice_transcript_is_extracted() -> None:
         "[微信语音转文字] 今天下午三点&四点"
     )
     assert parse_message_text(34, "<msg><voicemsg/></msg>") == "[语音]"
+
+
+def test_explicit_file_message_keeps_filename_in_searchable_text() -> None:
+    content = "<msg><appmsg><title>课程资料.docx</title></appmsg></msg>"
+    assert parse_message_text(34359738417, content) == "[文件] 课程资料.docx"
 
 
 def test_quoted_message_includes_the_original_text_and_sender() -> None:
@@ -94,3 +104,55 @@ def test_quoted_combined_forward_chat_history_is_expanded() -> None:
         "引用原文（同事）：[聊天记录] 两条记录\n"
         "小明： 被转发的原文"
     )
+
+
+def test_structured_details_cover_location_link_and_quote_without_raw_dump() -> None:
+    location = extract_message_details(
+        48,
+        '<msg><location x="31.2304" y="121.4737" poiname="人民广场" label="上海市黄浦区"/></msg>',
+    )
+    assert location == {
+        "name": "人民广场",
+        "address": "上海市黄浦区",
+        "latitude": 31.2304,
+        "longitude": 121.4737,
+    }
+
+    link_xml = """<msg><appmsg><type>5</type><title>课程页</title>
+      <des>课程说明</des><url>https://example.test/course</url>
+      <sourcedisplayname>教务系统</sourcedisplayname>
+      <thumburl>https://example.test/cover.jpg</thumburl></appmsg></msg>"""
+    link = extract_message_details(49, link_xml)
+    assert link["title"] == "课程页"
+    assert link["source"] == "教务系统"
+    assert link["cover_urls"] == ["https://example.test/cover.jpg"]
+    assert app_message_semantic_type(49, link_xml) == "link"
+
+    quote_xml = """<msg><appmsg><title>收到</title><type>57</type><refermsg>
+      <type>1</type><svrid>12345</svrid><displayname>张三</displayname>
+      <content>明天见</content></refermsg></appmsg></msg>"""
+    quote = extract_message_details(244813135921, quote_xml)
+    assert quote["quoted_message_id"] == "12345"
+    assert quote["quoted_sender"] == "张三"
+    assert quote["quoted_text"] == "明天见"
+
+
+def test_unknown_message_keeps_readable_text() -> None:
+    assert parse_message_text(987654321, "仍然能读的内容") == (
+        "[消息类型 987654321] 仍然能读的内容"
+    )
+
+
+def test_payment_and_call_keep_only_visible_status_text() -> None:
+    transfer = "<msg><appmsg><title>已收款</title><des>转账已被接收</des></appmsg></msg>"
+    assert parse_message_text(8589934592049, transfer) == "[转账] 已收款"
+    transfer_details = extract_message_details(8589934592049, transfer)
+    assert transfer_details == {
+        "visible_text": "[转账] 已收款",
+        "status_text": "已收款",
+    }
+
+    call = "<msg><voipmsg><title>通话已结束</title><duration>42</duration></voipmsg></msg>"
+    call_details = extract_message_details(50, call)
+    assert call_details["visible_text"] == "[通话] 通话已结束"
+    assert call_details["duration_seconds"] == 42

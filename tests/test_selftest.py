@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import zipfile
 from pathlib import Path
 
 from pypdf import PdfReader
@@ -12,13 +13,34 @@ def test_packaged_self_test_payload(tmp_path: Path) -> None:
     receipt_path = run_packaged_self_test(tmp_path)
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert receipt["status"] == "ok"
-    assert receipt["txt_count"] == receipt["pdf_count"] == 4
+    assert (
+        receipt["json_count"]
+        == receipt["jsonl_count"]
+        == receipt["txt_count"]
+        == receipt["pdf_count"]
+        == 4
+    )
     assert receipt["zstd"] == "ok"
     assert receipt["wechat_voice_text"] == "ok"
     assert receipt["pdf_image"] == "ok"
     assert receipt["moments_archive"] == "ok"
     assert receipt["moments_count"] == 1
+    assert receipt["jsonl_package"] == "ok"
+    assert receipt["jsonl_package_count"] == 4
     assert receipt["auto_discovery"] == "skipped"
+
+    json_payload = json.loads((tmp_path / receipt["json"]).read_text(encoding="utf-8"))
+    assert len(json_payload["messages"]) == 4
+    assert "不会访问真实微信数据" in json_payload["messages"][1]["text"]
+    jsonl_records = [
+        json.loads(line)
+        for line in (tmp_path / receipt["jsonl"]).read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(jsonl_records) == 4
+    assert jsonl_records[2]["transcript"]["source"] == "wechat"
+    with zipfile.ZipFile(tmp_path / receipt["jsonl_package_path"]) as package:
+        assert "messages.jsonl" in package.namelist()
+        assert any(name.startswith("media/images/") and name.endswith(".png") for name in package.namelist())
 
     txt_path = tmp_path / receipt["txt"]
     assert txt_path.read_bytes().startswith(b"\xef\xbb\xbf")

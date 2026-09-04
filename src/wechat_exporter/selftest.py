@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import io
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -10,9 +11,15 @@ from PIL import Image
 
 from .content import decode_database_content, parse_message_text
 from .exporters import PdfTranscriptWriter, TxtTranscriptWriter
+from .json_exporter import JsonTextTranscriptWriter
+from .jsonl_exporter import JsonlTranscriptWriter
+from .jsonl_package import export_conversation_jsonl_package
 from .integrity import verify_signature
 from .models import (
     Conversation,
+    AccountLocation,
+    JsonlPackageRequest,
+    MediaReference,
     Message,
     Moment,
     MomentMedia,
@@ -26,7 +33,7 @@ from .windows import discover_accounts, find_weixin_executable
 def run_packaged_self_test(
     output_dir: Path, *, check_environment: bool = False
 ) -> Path:
-    """Exercise the packaged TXT/PDF path without touching any WeChat data."""
+    """Exercise packaged chat formats and Moments without touching WeChat data."""
     output_dir.mkdir(parents=True, exist_ok=True)
     zstd_probe = "成品内置 zstd 解压自检"
     compressed_probe = zstandard.ZstdCompressor().compress(zstd_probe.encode("utf-8"))
@@ -57,7 +64,7 @@ def run_packaged_self_test(
             sender_id="self",
             sender_name="我",
             is_outgoing=True,
-            content="这是一条中文 TXT/PDF 打包自检消息。",
+            content="这是一条中文聊天格式打包自检消息。",
         ),
         Message(
             local_id=2,
@@ -88,6 +95,8 @@ def run_packaged_self_test(
             sender_name="我",
             is_outgoing=True,
             content="[图片]",
+            conversation_id=conversation.username,
+            media=MediaReference("image", md5="synthetic"),
         ),
     )
     image_stream = io.BytesIO()
@@ -101,6 +110,16 @@ def run_packaged_self_test(
     )
     txt_path = output_dir / "packaged-self-test.txt"
     pdf_path = output_dir / "packaged-self-test.pdf"
+    json_path = output_dir / "packaged-self-test.json"
+    jsonl_path = output_dir / "packaged-self-test.jsonl"
+    with JsonTextTranscriptWriter(json_path, conversation) as writer:
+        for message in messages:
+            writer.write(message)
+        json_count = writer.count
+    with JsonlTranscriptWriter(jsonl_path, conversation) as writer:
+        for message in messages:
+            writer.write(message)
+        jsonl_count = writer.count
     with TxtTranscriptWriter(txt_path, conversation) as writer:
         for message in messages:
             writer.write(message)
@@ -112,6 +131,33 @@ def run_packaged_self_test(
                 image=synthetic_image if message.local_id == 4 else None,
             )
         pdf_count = writer.count
+
+    class SyntheticImageResolver:
+        def resolve(self, message: Message) -> PdfImage | None:
+            return synthetic_image if message.message_type == 3 else None
+
+        def resolve_card_cover(self, _urls) -> PdfImage | None:
+            return None
+
+    package_request = JsonlPackageRequest(
+        conversations=(conversation,),
+        output_dir=output_dir / "package",
+        include_videos=False,
+    )
+    package = export_conversation_jsonl_package(
+        account=AccountLocation(output_dir / "synthetic-account", "self", "self-test"),
+        self_wxid="self",
+        conversation=conversation,
+        messages=messages,
+        output_dir=package_request.output_dir,
+        request=package_request,
+        image_resolver=SyntheticImageResolver(),  # type: ignore[arg-type]
+    )
+    with zipfile.ZipFile(package.path) as package_zip:
+        if not {"messages.jsonl", "manifest.json", "导出说明.txt"}.issubset(
+            package_zip.namelist()
+        ):
+            raise RuntimeError("AI 完整资料包自检失败")
 
     moments_path = output_dir / "packaged-self-test-moments"
     moment_media = MomentMedia(md5="0" * 32)
@@ -140,6 +186,8 @@ def run_packaged_self_test(
             {
                 "status": "ok",
                 "message_count": len(messages),
+                "json_count": json_count,
+                "jsonl_count": jsonl_count,
                 "txt_count": txt_count,
                 "pdf_count": pdf_count,
                 "zstd": "ok",
@@ -147,9 +195,14 @@ def run_packaged_self_test(
                 "pdf_image": "ok",
                 "moments_archive": "ok",
                 "moments_count": moments_count,
+                "jsonl_package": "ok",
+                "jsonl_package_count": package.message_count,
                 "auto_discovery": environment_status,
                 "txt": txt_path.name,
                 "pdf": pdf_path.name,
+                "json": json_path.name,
+                "jsonl": jsonl_path.name,
+                "jsonl_package_path": package.path.relative_to(output_dir).as_posix(),
                 "moments": moments_html.relative_to(output_dir).as_posix(),
                 "moments_json": moments_json.relative_to(output_dir).as_posix(),
                 "moments_manifest": moments_manifest.relative_to(output_dir).as_posix(),

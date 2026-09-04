@@ -57,6 +57,7 @@ class FakeService:
         self.account, self.process_id = account, process_id
         self.closed = False
         self.direct = False
+        self.cached = False
         self.prepared = False
         self.instances.append(self)
 
@@ -64,6 +65,9 @@ class FakeService:
         self.direct = True
         if self.fail:
             raise RestartRequired()
+
+    def connect_from_saved_cache(self, **kwargs):
+        self.cached = True
 
     def _prepare(self, keys, **kwargs):
         self.prepared = True
@@ -143,3 +147,23 @@ def test_no_running_wechat_requests_start_without_launching(manager, monkeypatch
     with pytest.raises(RestartRequired):
         manager.connect()
     assert not FakeService.instances
+
+
+def test_no_running_wechat_reuses_last_confirmed_account_cache(
+    manager,
+    tmp_path,
+    monkeypatch,
+):
+    cached = account(tmp_path, "cached")
+    manager.config.set(
+        last_account_wxid=cached.wxid,
+        last_db_path=str(cached.db_dir),
+    )
+    monkeypatch.setattr(connection, "list_wechat_processes", lambda: [])
+
+    service = manager.connect()
+
+    assert service.account.account_dir == cached.account_dir
+    assert service.account.wxid == cached.wxid
+    assert service.cached is True
+    assert service.direct is False

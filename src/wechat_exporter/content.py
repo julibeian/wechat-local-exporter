@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import html
+import math
 import re
+from collections.abc import Iterable
 from xml.etree import ElementTree
+
+from .models import WECHAT_FILE_MESSAGE_TYPES
 
 
 TYPE_LABELS = {
@@ -114,16 +118,236 @@ def parse_message_text(local_type: int, raw_content: str) -> str:
         title = _first_xml_value(content, ("title", "filename", "des", "displayname"))
         label = TYPE_LABELS.get(local_type, "[链接/文件]")
         return f"{label} {title}".strip()
+    if local_type in WECHAT_FILE_MESSAGE_TYPES:
+        title = _first_xml_value(content, ("title", "filename", "displayname"))
+        return f"[文件] {title}".strip()
     if local_type == 42:
         name = _first_xml_value(content, ("nickname", "displayname", "alias"))
         return f"[名片] {name}".strip()
     if local_type == 266287972401:
         title = _first_xml_value(content, ("title",))
         return title or "[拍一拍]"
+    if local_type in (50, 8594229559345, 8589934592049):
+        label = TYPE_LABELS[local_type]
+        detail = _first_xml_value(
+            content,
+            (
+                "title",
+                "des",
+                "wording",
+                "pay_memo",
+                "receiverdes",
+                "feedesc",
+            ),
+        )
+        if not detail:
+            stripped = _strip_xml(content)
+            detail = stripped if stripped != content or not content.startswith("<") else ""
+        return _labeled_item(label, detail)
     if local_type in (10000, 10002):
         stripped = _strip_xml(content)
         return stripped or TYPE_LABELS[local_type]
-    return TYPE_LABELS.get(local_type, f"[消息类型 {local_type}]")
+    known = TYPE_LABELS.get(local_type)
+    if known:
+        return known
+    visible = _readable_unknown_text(content)
+    label = f"[消息类型 {local_type}]"
+    return f"{label} {visible}".strip() if visible else label
+
+
+def extract_message_details(local_type: int, raw_content: str) -> dict[str, object] | None:
+    """Return reliable, AI-friendly fields without exposing an opaque XML dump.
+
+    WeChat has used several XML layouts for the same visible card.  This helper
+    therefore keeps only values that can be named with confidence and silently
+    omits fields that are absent in a particular client version.
+    """
+
+    content = _clean_text(raw_content)
+    if not content:
+        return None
+
+    if local_type == 48:
+        root = _parse_xml(content)
+        location = _find_xml_node(root, "location")
+        attributes = _node_attributes(location)
+        details: dict[str, object] = {}
+        _put(
+            details,
+            "name",
+            attributes.get("poiname")
+            or attributes.get("label")
+            or _first_xml_value(content, ("poiname", "label")),
+        )
+        _put(
+            details,
+            "address",
+            attributes.get("label") or _first_xml_value(content, ("label",)),
+        )
+        _put_number(
+            details,
+            "latitude",
+            attributes.get("x")
+            or attributes.get("latitude")
+            or _first_xml_value(content, ("x", "latitude")),
+        )
+        _put_number(
+            details,
+            "longitude",
+            attributes.get("y")
+            or attributes.get("longitude")
+            or _first_xml_value(content, ("y", "longitude")),
+        )
+        _put(details, "scale", attributes.get("scale"))
+        return details or None
+
+    if local_type == 42:
+        root = _parse_xml(content)
+        card = _find_xml_node(root, "msg")
+        if card is None:
+            card = root
+        attributes = _node_attributes(card)
+        details = {}
+        _put(
+            details,
+            "name",
+            attributes.get("nickname")
+            or attributes.get("displayname")
+            or _first_xml_value(content, ("nickname", "displayname")),
+        )
+        _put(
+            details,
+            "alias",
+            attributes.get("alias") or _first_xml_value(content, ("alias",)),
+        )
+        _put(
+            details,
+            "wechat_id",
+            attributes.get("username")
+            or attributes.get("usernametext")
+            or _first_xml_value(content, ("username", "usernametext")),
+        )
+        return details or None
+
+    if local_type == 244813135921:
+        root = _parse_xml(content)
+        refermsg = _find_xml_node(root, "refermsg")
+        details = {}
+        _put(details, "reply_text", _first_xml_value(content, ("title",)))
+        if refermsg is not None:
+            _put(
+                details,
+                "quoted_sender",
+                _child_xml_value(
+                    refermsg,
+                    ("displayname", "sourcename", "fromusr"),
+                ),
+            )
+            referenced_type = _child_xml_value(refermsg, ("type",))
+            _put_integer(details, "quoted_message_type", referenced_type)
+            _put(
+                details,
+                "quoted_message_id",
+                _child_xml_value(refermsg, ("svrid", "msgid", "newmsgid")),
+            )
+            referenced_content = _xml_node_content(_find_xml_node(refermsg, "content"))
+            try:
+                type_number = int(referenced_type)
+            except ValueError:
+                type_number = 0
+            _put(details, "quoted_text", _parse_referenced_content(type_number, referenced_content))
+        return details or None
+
+    if local_type == 81604378673:
+        return {
+            "title": _first_xml_value(content, ("title",)),
+            "representation": "flattened_text",
+        }
+
+    if local_type in (49, 154618822705) or local_type in WECHAT_FILE_MESSAGE_TYPES:
+        details = {}
+        appmsg_type = _first_xml_value(content, ("type",))
+        _put_integer(details, "app_message_type", appmsg_type)
+        _put(
+            details,
+            "title",
+            _first_xml_value(content, ("title", "filename", "displayname")),
+        )
+        _put(
+            details,
+            "description",
+            _first_xml_value(content, ("des", "description")),
+        )
+        _put(details, "url", _first_xml_value(content, ("url", "weburl")))
+        _put(
+            details,
+            "source",
+            _first_xml_value(content, ("sourcedisplayname", "appname")),
+        )
+        _put(details, "app_id", _first_xml_value(content, ("appid", "weappappid")))
+        _put(
+            details,
+            "page_path",
+            _first_xml_value(content, ("pagepath", "weappinfo_pagepath")),
+        )
+        cover_urls = _unique_nonempty(
+            _first_xml_value(content, (name,))
+            for name in ("thumburl", "cdnthumburl", "cdnthumbaurl", "coverurl")
+        )
+        if cover_urls:
+            details["cover_urls"] = cover_urls
+        return details or None
+
+    if local_type in (
+        50,
+        8594229559345,
+        8589934592049,
+        10000,
+        10002,
+        266287972401,
+    ):
+        visible_text = parse_message_text(local_type, content)
+        details = {"visible_text": visible_text} if visible_text else {}
+        _put(
+            details,
+            "status_text",
+            _first_xml_value(
+                content,
+                ("title", "des", "wording", "pay_memo", "receiverdes", "feedesc"),
+            ),
+        )
+        if local_type == 50:
+            _put_number(
+                details,
+                "duration_seconds",
+                _first_xml_value(content, ("duration", "voiplength")),
+            )
+        return details or None
+
+    return None
+
+
+def app_message_semantic_type(local_type: int, raw_content: str) -> str | None:
+    """Refine known app-card subtypes while leaving uncertain values alone."""
+
+    if local_type == 154618822705:
+        return "mini_program"
+    if local_type != 49:
+        return None
+    try:
+        subtype = int(_first_xml_value(raw_content, ("type",)))
+    except ValueError:
+        return None
+    return {
+        3: "music",
+        4: "video_card",
+        5: "link",
+        6: "file",
+        19: "chat_history",
+        33: "mini_program",
+        36: "mini_program",
+        57: "quote",
+    }.get(subtype)
 
 
 def split_group_sender(content: str) -> tuple[str, str]:
@@ -377,10 +601,61 @@ def _first_xml_attribute(content: str, tag: str, attribute: str) -> str:
     return ""
 
 
+def _node_attributes(node: ElementTree.Element | None) -> dict[str, str]:
+    if node is None:
+        return {}
+    return {
+        str(key).rsplit("}", 1)[-1].lower(): _clean_text(html.unescape(str(value)))
+        for key, value in node.attrib.items()
+    }
+
+
+def _put(target: dict[str, object], key: str, value: object) -> None:
+    if value is None:
+        return
+    normalized = _clean_text(str(value))
+    if normalized:
+        target[key] = normalized
+
+
+def _put_integer(target: dict[str, object], key: str, value: object) -> None:
+    try:
+        target[key] = int(str(value).strip())
+    except (TypeError, ValueError):
+        pass
+
+
+def _put_number(target: dict[str, object], key: str, value: object) -> None:
+    try:
+        number = float(str(value).strip())
+    except (TypeError, ValueError):
+        return
+    if not math.isfinite(number):
+        return
+    target[key] = int(number) if number.is_integer() else number
+
+
+def _unique_nonempty(values: Iterable[object]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        normalized = _clean_text(str(value))
+        if normalized and normalized not in result:
+            result.append(normalized)
+    return result
+
+
 def _strip_xml(content: str) -> str:
     value = html.unescape(content)
     value = re.sub(r"<[^>]+>", " ", value)
     return _clean_text(value)
+
+
+def _readable_unknown_text(content: str) -> str:
+    value = _strip_xml(content)
+    value = re.sub(r"[A-Za-z0-9+/=_-]{256,}", "[不可读数据]", value)
+    if len(value) > 2_000:
+        value = value[:2_000].rstrip() + "…"
+    return value
 
 
 def _clean_text(value: str) -> str:

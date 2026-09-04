@@ -4,22 +4,19 @@ import os
 from datetime import date, datetime
 from pathlib import Path
 
+from wechat_exporter import gui
 from wechat_exporter.models import AccountLocation, Conversation
 from wechat_exporter.gui import (
     ExporterApp,
     HISTORY_DIALOG_MIN_SIZE,
     HISTORY_DIALOG_SIZE,
-    PANE_SASH_ALLOWANCE,
-    SESSION_PANE_MIN_HEIGHT,
-    STAR_PROMPT_DELAY_SECONDS,
-    StarPrompt,
     _conversation_matches_filters,
     _group_conversations,
     _name_initials,
     _date_range_timestamps,
     _format_date_range,
     _moments_export_eligibility,
-    _expanded_session_pane_height,
+    _video_size_bytes,
 )
 from wechat_exporter.windows import select_current_account
 
@@ -89,24 +86,22 @@ def test_conversations_are_grouped_by_latin_and_pinyin_initials() -> None:
     assert _name_initials("吕新颜") == "LXY"
 
 
-def test_star_prompt_is_embedded_and_history_dialog_is_larger() -> None:
-    assert issubclass(StarPrompt, __import__("tkinter").Frame)
+def test_star_prompt_runtime_is_removed_and_history_dialog_is_larger() -> None:
+    assert not hasattr(gui, "StarPrompt")
+    assert not hasattr(ExporterApp, "_schedule_star_prompt_after_connection")
     assert HISTORY_DIALOG_SIZE == (1380, 760)
     assert HISTORY_DIALOG_MIN_SIZE == (1080, 580)
 
 
-def test_dismissing_star_prompt_gives_its_height_to_conversation_list() -> None:
-    with_prompt = 225
-    without_prompt = _expanded_session_pane_height(
-        with_prompt,
-        reclaimed_height=55,
-        available_height=700,
-        export_required_height=305,
-    )
-
-    assert without_prompt - with_prompt == 55
-    assert with_prompt >= SESSION_PANE_MIN_HEIGHT
-    assert PANE_SASH_ALLOWANCE == 8
+def test_video_limit_must_be_positive() -> None:
+    assert _video_size_bytes("100") == 100 * 1024 * 1024
+    for value in ("0", "-1", ""):
+        try:
+            _video_size_bytes(value)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"expected invalid video limit: {value!r}")
 
 
 def test_moments_export_requires_one_personal_contact_only() -> None:
@@ -121,28 +116,18 @@ def test_moments_export_requires_one_personal_contact_only() -> None:
     assert not _moments_export_eligibility((group,))[0]
 
 
-class _AfterRoot:
-    def __init__(self) -> None:
-        self.calls: list[tuple[int, object]] = []
-        self.cancelled: list[str] = []
-
-    def after(self, delay_ms: int, callback) -> str:
-        self.calls.append((delay_ms, callback))
-        return f"after-{len(self.calls)}"
-
-    def after_cancel(self, after_id: str) -> None:
-        self.cancelled.append(after_id)
-
-
-def test_star_timer_starts_as_full_delay_after_connection() -> None:
+def test_task_eligibility_matches_selected_object_type() -> None:
     app = object.__new__(ExporterApp)
-    app.root = _AfterRoot()
-    app._star_prompt_shown = False
-    app._star_prompt_after_id = None
-
-    app._schedule_star_prompt_after_connection()
-    assert app.root.calls[0][0] == int(STAR_PROMPT_DELAY_SECONDS * 1000)
-
-    app._schedule_star_prompt_after_connection()
-    assert app.root.cancelled == ["after-1"]
-    assert app.root.calls[1][0] == 60_000
+    contact = Conversation("wxid_friend", "朋友")
+    group = Conversation("study@chatroom", "学习群", is_group=True)
+    self_contact = Conversation("wxid_self", "我自己", is_self=True)
+    assert app._eligible_tasks((contact,)) == {
+        "chat",
+        "jsonl_package",
+        "chat_files",
+        "moments",
+    }
+    assert app._eligible_tasks((group,)) == {"chat", "jsonl_package", "chat_files"}
+    assert app._eligible_tasks((contact, group)) == {"chat", "jsonl_package", "chat_files"}
+    assert app._eligible_tasks((self_contact,)) == {"moments"}
+    assert app._eligible_tasks((self_contact, contact)) == set()

@@ -19,8 +19,16 @@ def make_plan(tmp_path, kind="portable"):
     payload.write_bytes(b"new executable")
     if kind == "installer":
         (target.parent / "unins000.exe").write_bytes(b"uninstaller")
-    return UpdatePlan(str(payload), hashlib.sha256(payload.read_bytes()).hexdigest(),
-                      str(target), kind, "1.4.0", 1234)
+    installed_bytes = b"new installed" if kind == "installer" else payload.read_bytes()
+    return UpdatePlan(
+        str(payload),
+        hashlib.sha256(payload.read_bytes()).hexdigest(),
+        hashlib.sha256(installed_bytes).hexdigest(),
+        str(target),
+        kind,
+        "1.4.0",
+        1234,
+    )
 
 
 def test_portable_replacement_and_restart(tmp_path):
@@ -35,6 +43,22 @@ def test_portable_replacement_and_restart(tmp_path):
 def test_hash_failure_never_changes_old_executable(tmp_path):
     plan = make_plan(tmp_path)
     Path(plan.payload).write_bytes(b"tampered")
+    with pytest.raises(UserFacingError, match="校验"):
+        apply_update(plan, launch=lambda *args: pytest.fail("must not run"))
+    assert Path(plan.target).read_bytes() == b"old executable"
+
+
+def test_invalid_target_hash_never_runs_installer(tmp_path):
+    plan = make_plan(tmp_path, "installer")
+    plan = UpdatePlan(
+        plan.payload,
+        plan.sha256,
+        "z" * 64,
+        plan.target,
+        plan.kind,
+        plan.version,
+        plan.parent_pid,
+    )
     with pytest.raises(UserFacingError, match="校验"):
         apply_update(plan, launch=lambda *args: pytest.fail("must not run"))
     assert Path(plan.target).read_bytes() == b"old executable"
@@ -74,6 +98,23 @@ def test_installer_exit_codes_and_rollback(tmp_path, exit_code):
     assert calls[-1][0] == Path(plan.target)
 
 
+def test_installer_success_code_with_wrong_installed_binary_rolls_back(tmp_path):
+    plan = make_plan(tmp_path, "installer")
+    started = []
+
+    def launch(path, *args):
+        if path == Path(plan.payload):
+            Path(plan.target).write_bytes(b"wrong installed binary")
+            return SimpleNamespace(wait=lambda: 0)
+        started.append(path)
+
+    with pytest.raises(UserFacingError):
+        apply_update(plan, launch=launch)
+
+    assert Path(plan.target).read_bytes() == b"old executable"
+    assert started == [Path(plan.target)]
+
+
 def test_locked_portable_file_preserves_original(tmp_path, monkeypatch):
     plan = make_plan(tmp_path)
     monkeypatch.setattr(updater.os, "replace", lambda *a: (_ for _ in ()).throw(PermissionError()))
@@ -91,7 +132,13 @@ def test_install_detection_and_staging_never_replaces_running_file(tmp_path, mon
     monkeypatch.setattr(updater.sys, "executable", str(target))
     launched = []
     monkeypatch.setattr(updater, "_launch", lambda *args: launched.append(args))
-    download = DownloadedUpdate(Path(plan.payload), plan.sha256, plan.version, plan.kind)
+    download = DownloadedUpdate(
+        Path(plan.payload),
+        plan.sha256,
+        plan.target_sha256,
+        plan.version,
+        plan.kind,
+    )
     path = updater.stage_update(download)
     assert path.is_file()
     assert launched[0][0].name == "update-runner.exe"
@@ -108,7 +155,15 @@ def test_source_mode_cannot_replace_python(tmp_path, monkeypatch):
     monkeypatch.setattr(updater.sys, "frozen", False, raising=False)
     plan = make_plan(tmp_path)
     with pytest.raises(UserFacingError, match="源码"):
-        updater.stage_update(DownloadedUpdate(Path(plan.payload), plan.sha256, plan.version, plan.kind))
+        updater.stage_update(
+            DownloadedUpdate(
+                Path(plan.payload),
+                plan.sha256,
+                plan.target_sha256,
+                plan.version,
+                plan.kind,
+            )
+        )
 
 
 def test_cleanup_only_removes_successful_transaction(tmp_path):

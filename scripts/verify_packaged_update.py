@@ -43,8 +43,16 @@ def main() -> None:
     hidden = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     parent = subprocess.Popen([sys.executable, "-c", "input()"], stdin=subprocess.PIPE,
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=hidden)
-    plan = dict(payload=str(payload), target=str(target), kind="portable", version="1.4.0",
-                sha256=hashlib.sha256(payload.read_bytes()).hexdigest(), parent_pid=parent.pid)
+    payload_sha256 = hashlib.sha256(payload.read_bytes()).hexdigest()
+    plan = dict(
+        payload=str(payload),
+        sha256=payload_sha256,
+        target_sha256=payload_sha256,
+        target=str(target),
+        kind="portable",
+        version="1.4.0",
+        parent_pid=parent.pid,
+    )
     plan_path = transaction / "plan.json"
     plan_path.write_text(json.dumps(plan), encoding="utf-8")
     original = target.read_bytes()

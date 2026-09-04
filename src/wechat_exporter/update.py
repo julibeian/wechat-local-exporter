@@ -103,6 +103,7 @@ class UpdateSource(Protocol):
 class DownloadedUpdate:
     path: Path
     sha256: str
+    target_sha256: str
     version: str
     kind: str
 
@@ -158,6 +159,10 @@ class GitHubSource:
         try:
             manifest = _read_bounded(checksum.url, self.opener, 64 * 1024).decode("utf-8-sig")
             expected = checksum_for(manifest, asset.name)
+            target_asset = release.asset("portable")
+            if target_asset is None:
+                raise UserFacingError("该版本缺少主程序校验信息，暂不能安全更新。")
+            target_expected = checksum_for(manifest, target_asset.name)
             self.download_root.mkdir(parents=True, exist_ok=True)
             directory = Path(tempfile.mkdtemp(prefix="update-", dir=self.download_root))
             partial = directory / (asset.name + ".part")
@@ -184,7 +189,13 @@ class GitHubSource:
             if received != asset.size or not hmac.compare_digest(digest.hexdigest(), expected):
                 raise UserFacingError("SHA256 校验失败，已丢弃下载文件。当前版本不受影响。")
             partial.replace(destination)
-            return DownloadedUpdate(destination, expected, release.version, kind)
+            return DownloadedUpdate(
+                destination,
+                expected,
+                target_expected,
+                release.version,
+                kind,
+            )
         except Exception as error:
             if directory is not None:
                 shutil.rmtree(directory, ignore_errors=True)

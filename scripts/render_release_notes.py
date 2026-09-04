@@ -14,12 +14,21 @@ from pathlib import Path
 
 RELEASES_URL = "https://github.com/julibeian/wechat-txt-pdf-exporter/releases"
 
+RELEASE_DISCLOSURE = """## 使用与隐私声明
+
+- 聊天和朋友圈内容只在本机读取、处理和保存，不上传聊天数据，也不修改微信数据库；本机没有同步的历史记录无法由本工具补齐。
+- 同账号快速缓存位于当前 Windows 用户的本地应用数据目录。数据库密钥由 Windows DPAPI 绑定当前用户加密保存；可查询的解密数据库快照属于本机敏感数据。
+- 检查更新只访问本项目的公开 GitHub Release；仅用户明确启用的媒体补全或朋友圈媒体获取可能访问相应网络地址。
+- 安装包尚未配置商业代码签名证书，Windows 可能显示“未知发布者”；SHA-256 只能校验文件一致性，不能替代可信下载来源。
+- 升级不会主动删除已有导出文件和导出历史；缓存或配置兼容边界以本版本更新说明为准。
+"""
+
 
 def render_release_notes(
     notes: str, tag: str, asset_names: list[str] | None = None
 ) -> str:
     if not re.fullmatch(r"v\d+\.\d+\.\d+", tag, flags=re.ASCII):
-        raise ValueError(f"Expected a release tag such as v1.3.0, got {tag!r}")
+        raise ValueError(f"Expected a release tag such as v1.4.0, got {tag!r}")
 
     notes = notes.replace("\r\n", "\n").rstrip() + "\n"
     headings = list(re.finditer(r"^# (v[^\n]+)\n", notes, flags=re.MULTILINE))
@@ -72,6 +81,8 @@ def render_release_notes(
         "## 更新内容",
         "",
         sections[0],
+        "",
+        RELEASE_DISCLOSURE.rstrip(),
         "",
     ])
 

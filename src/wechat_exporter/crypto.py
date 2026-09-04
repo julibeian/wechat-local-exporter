@@ -491,7 +491,32 @@ def _optional_file_signature(path: Path) -> tuple[int, int] | None:
 def _copy_consistent_database_snapshot(
     source: Path, destination: Path, *, attempts: int = 4
 ) -> Path:
-    """Copy an encrypted DB/WAL pair only when both stay stable during the copy."""
+    wal_destination, _signature = copy_consistent_database_snapshot(
+        source,
+        destination,
+        attempts=attempts,
+    )
+    return wal_destination
+
+
+def database_source_signature(source: Path) -> dict[str, list[int] | None]:
+    """Return the cheap DB/WAL fingerprint used by the persistent cache."""
+
+    database = _file_signature(source)
+    wal = _optional_file_signature(Path(str(source) + "-wal"))
+    return {
+        "database": [database[0], database[1]],
+        "wal": [wal[0], wal[1]] if wal is not None else None,
+    }
+
+
+def copy_consistent_database_snapshot(
+    source: Path,
+    destination: Path,
+    *,
+    attempts: int = 4,
+) -> tuple[Path, dict[str, list[int] | None]]:
+    """Copy a stable encrypted DB/WAL pair and return its exact signature."""
     wal_source = Path(str(source) + "-wal")
     wal_destination = Path(str(destination) + "-wal")
     for _ in range(attempts):
@@ -507,7 +532,10 @@ def _copy_consistent_database_snapshot(
             # A WAL can disappear during checkpointing; retry the whole pair.
             continue
         if before == after:
-            return wal_destination
+            return wal_destination, {
+                "database": [before[0][0], before[0][1]],
+                "wal": [before[1][0], before[1][1]] if before[1] is not None else None,
+            }
     raise RuntimeError(
         f"微信正在持续写入数据库，无法取得一致快照：{source.name}。请稍候后重试。"
     )

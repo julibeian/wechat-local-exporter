@@ -99,7 +99,7 @@ class PdfTranscriptWriter:
             str(path), pagesize=A4, pageCompression=1, title=safe_title
         )
         self._canvas.setTitle(safe_title)
-        self._canvas.setAuthor("微信 TXT/PDF 本地导出工具")
+        self._canvas.setAuthor("微信聊天本地导出工具")
         self._canvas.setSubject("本机微信聊天记录只读导出")
         self.y = 0.0
         self._start_page(first=True)
@@ -309,7 +309,7 @@ class MomentsPdfWriter:
             str(path), pagesize=A4, pageCompression=1, title=safe_title
         )
         self._canvas.setTitle(safe_title)
-        self._canvas.setAuthor("微信 TXT/PDF 本地导出工具")
+        self._canvas.setAuthor("微信聊天本地导出工具")
         self._canvas.setSubject("本机可见朋友圈只读导出")
         self.y = 0.0
         self._start_page(first=True)

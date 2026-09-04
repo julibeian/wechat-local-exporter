@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .content import decode_database_content, parse_message_text, split_group_sender
 from .crypto import DecryptedWorkspace
+from .attachments import extract_attachment_reference
 from .media import extract_media_reference
 from .models import AccountLocation, Conversation, ExportWorkload, Message, Moment
 from .moments import load_contact_moments
@@ -443,6 +444,11 @@ class WeChatArchive:
             stripped_raw,
             _first(row, keys, ("packed_info_data",), None),
         )
+        attachment = extract_attachment_reference(
+            message_type,
+            stripped_raw,
+            _first(row, keys, ("packed_info_data",), None),
+        )
         return Message(
             local_id=local_id,
             timestamp=timestamp,
@@ -456,6 +462,8 @@ class WeChatArchive:
             server_id=server_id,
             conversation_id=conversation.username,
             media=media,
+            attachment=attachment,
+            raw_content=stripped_raw,
         )
 
 

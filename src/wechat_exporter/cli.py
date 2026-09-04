@@ -9,7 +9,7 @@ from .windows import discover_accounts, list_wechat_processes, read_wechat_versi
 
 def main() -> None:
     require_signature_integrity()
-    parser = argparse.ArgumentParser(description="微信聊天 TXT/PDF 本地导出")
+    parser = argparse.ArgumentParser(description="微信聊天本地导出工具")
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("gui", help="启动图形界面")
     subparsers.add_parser("diagnose", help="只读检测微信版本、进程和数据目录")

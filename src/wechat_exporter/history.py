@@ -24,6 +24,7 @@ class ExportHistoryEntry:
     file_path: str
     message_count: int
     duration_seconds: float
+    export_category: str = "chat"
 
 
 def default_history_path() -> Path:
@@ -61,6 +62,10 @@ def load_export_history(path: Path | None = None) -> list[ExportHistoryEntry]:
                     file_path=str(item["file_path"]),
                     message_count=int(item.get("message_count", 0)),
                     duration_seconds=float(item.get("duration_seconds", 0.0)),
+                    export_category=str(
+                        item.get("export_category")
+                        or _infer_export_category(str(item.get("file_path", "")))
+                    ),
                 )
             )
         except (KeyError, TypeError, ValueError):
@@ -99,6 +104,7 @@ def append_export_history(
                 file_path=str(absolute_path),
                 message_count=result.message_counts.get(conversation.username, 0),
                 duration_seconds=result.duration_seconds,
+                export_category=result.file_categories.get(file_path, "chat"),
             )
         )
     if not new_entries:
@@ -120,3 +126,14 @@ def append_export_history(
     )
     os.replace(temporary_path, history_path)
     return new_entries
+
+
+def _infer_export_category(file_path: str) -> str:
+    value = file_path.casefold()
+    if "朋友圈" in value or value.endswith(("moments.json", "manifest-sha256.txt")):
+        return "moments"
+    if value.endswith(".zip") and "聊天文件" in value:
+        return "chat_files"
+    if value.endswith(".zip") and "完整聊天资料" in value:
+        return "chat_package"
+    return "chat"

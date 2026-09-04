@@ -40,7 +40,7 @@ class Transport:
         return io.BytesIO(json.dumps(self.entries).encode() if "api.github.com" in url else self.blobs[url])
 
 
-@pytest.mark.parametrize("latest,expected", [("1.3.0", "latest"), ("1.4.0", "available"), ("1.2.0", "latest"), ("1.10.0", "available")])
+@pytest.mark.parametrize("latest,expected", [("1.4.0", "latest"), ("1.5.0", "latest"), ("1.2.0", "latest"), ("1.10.0", "available"), ("2.0.0", "available")])
 def test_versions(tmp_path, latest, expected):
     entry, _ = release_json(latest)
     transport = Transport([entry])
@@ -78,7 +78,8 @@ def test_non_json_api(tmp_path):
 
 def test_banner_dismissal_persists_until_a_different_release(tmp_path):
     path = tmp_path / "s.json"
-    source = GitHubSource(opener=Transport())
+    entry, _ = release_json("1.6.0")
+    source = GitHubSource(opener=Transport([entry]))
     manager = UpdateManager(LocalConfig(path), (source,), now=lambda: 100_000)
     manager.check()
     assert manager.should_show_banner()
@@ -87,7 +88,7 @@ def test_banner_dismissal_persists_until_a_different_release(tmp_path):
     restarted = UpdateManager(LocalConfig(path), (source,), now=lambda: 100_001)
     assert restarted.check().status == "available"
     assert not restarted.should_show_banner()
-    entry, _ = release_json("1.5.0")
+    entry, _ = release_json("1.7.0")
     restarted.sources = (GitHubSource(opener=Transport([entry])),)
     restarted.check(automatic=False)
     assert restarted.should_show_banner()
@@ -99,7 +100,7 @@ def test_shared_instances_and_24_hour_boundary(tmp_path):
     first = UpdateManager(LocalConfig(path), (GitHubSource(opener=transport),), now=lambda: 100_000)
     second = UpdateManager(LocalConfig(path), first.sources, now=lambda: 100_000)
     first.check()
-    assert second.check().status == "available"
+    assert second.check().status == "latest"
     assert len(transport.calls) == 1
     third = UpdateManager(LocalConfig(path), first.sources, now=lambda: 100_000 + CHECK_INTERVAL)
     third.check()
@@ -133,8 +134,41 @@ def test_download_and_sha_failure_preserve_old_binary(tmp_path, bad):
         result = source.download(release, "installer", progress=lambda *p: progress.append(p))
         assert result.path.read_bytes() == b"new executable"
         assert result.sha256 == hashlib.sha256(result.path.read_bytes()).hexdigest()
+        assert result.target_sha256 == hashlib.sha256(b"new executable").hexdigest()
         assert progress[-1] == (14, 14)
     assert old.read_bytes() == b"original"
+
+
+def test_installer_download_carries_separate_installed_executable_hash(tmp_path):
+    version = "1.4.0"
+    entry, blobs = release_json(version)
+    prefix = (
+        "https://github.com/julibeian/wechat-txt-pdf-exporter/"
+        f"releases/download/v{version}/"
+    )
+    installer_name = f"WeChat-TXT-PDF-Exporter-Installer-v{version}.exe"
+    portable_name = f"WeChat-TXT-PDF-Exporter-v{version}.exe"
+    checksum_name = f"SHA256SUMS-v{version}.txt"
+    installer_bytes = b"installer payload"
+    portable_bytes = b"installed executable"
+    blobs[prefix + installer_name] = installer_bytes
+    blobs[prefix + portable_name] = portable_bytes
+    blobs[prefix + checksum_name] = (
+        f"{hashlib.sha256(installer_bytes).hexdigest()}  {installer_name}\n"
+        f"{hashlib.sha256(portable_bytes).hexdigest()}  {portable_name}\n"
+    ).encode()
+    for asset in entry["assets"]:
+        asset["size"] = len(blobs[asset["browser_download_url"]])
+    transport = Transport([entry])
+    transport.blobs = blobs
+
+    result = GitHubSource(
+        opener=transport,
+        download_root=tmp_path / "updates",
+    ).download(GitHubSource(opener=transport).releases()[0], "installer")
+
+    assert result.sha256 == hashlib.sha256(installer_bytes).hexdigest()
+    assert result.target_sha256 == hashlib.sha256(portable_bytes).hexdigest()
 
 
 def test_download_cancel_and_missing_checksum(tmp_path):

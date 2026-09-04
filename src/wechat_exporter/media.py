@@ -95,6 +95,26 @@ def extract_media_reference(
         if not md5:
             return None
         return MediaReference(kind="image", md5=md5.lower())
+    if message_type == 43:
+        attributes = _xml_attributes(raw_content, "videomsg")
+        md5 = (
+            attributes.get("md5", "")
+            or attributes.get("newmd5", "")
+            or _first_md5(packed_info)
+        ).lower()
+        return MediaReference(
+            kind="video",
+            md5=md5,
+            aes_key=attributes.get("aeskey", ""),
+            cdn_url=attributes.get("cdnvideourl", ""),
+            thumbnail_url=(
+                attributes.get("cdnthumburl", "")
+                or attributes.get("thumburl", "")
+            ),
+            size=_optional_int(attributes.get("length")),
+            duration_seconds=_optional_float(attributes.get("playlength")),
+            filename=attributes.get("filename", ""),
+        )
     if message_type != 47:
         return None
 
@@ -148,6 +168,7 @@ class MediaResolver:
         image_keys: tuple[bytes, int] | None = None,
         download: Callable[[str], bytes] | None = None,
         ffmpeg_executable: str | None = None,
+        allow_network: bool = True,
     ):
         self.account = account
         self.wxid = wxid
@@ -155,6 +176,7 @@ class MediaResolver:
         self._image_keys = image_keys
         self._image_keys_checked = image_keys is not None
         self._download_override = download
+        self.allow_network = allow_network
         self._ffmpeg_executable = ffmpeg_executable
         self._ffmpeg_checked = ffmpeg_executable is not None
         self._cache: dict[tuple[str, ...], PdfImage | None] = {}
@@ -224,6 +246,22 @@ class MediaResolver:
             else:
                 self.stats.local_originals += 1
         return result
+
+    def resolve_card_cover(self, urls: Iterable[str]) -> PdfImage | None:
+        """Best-effort fetch for explicitly enabled, official WeChat card covers."""
+
+        if not self.allow_network:
+            return None
+        for url in urls:
+            if not url:
+                continue
+            try:
+                data = self._download(url)
+                if _image_format(data):
+                    return _pdf_image(data, source="微信官方卡片封面")
+            except (OSError, ValueError, RuntimeError):
+                continue
+        return None
 
     def resolve_moment(self, media: MomentMedia) -> PdfImage | None:
         """Resolve a Moments photo for the legacy PDF writer."""
@@ -376,6 +414,10 @@ class MediaResolver:
                     return _pdf_image(data, source="本机表情缓存")
             except (OSError, ValueError):
                 pass
+
+        if not self.allow_network:
+            self._add_issue("部分表情图片尚未缓存在本机（未启用联网补全）")
+            return None
 
         candidates = (
             (reference.cdn_url, False),
@@ -914,6 +956,22 @@ def _first_md5(value: object) -> str:
         return ""
     match = _HEX_MD5_RE.search(raw)
     return match.group(1).decode("ascii").lower() if match else ""
+
+
+def _optional_int(value: object) -> int | None:
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _optional_float(value: object) -> float | None:
+    try:
+        parsed = float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
 
 
 def _xml_attributes(content: str, tag: str) -> dict[str, str]:

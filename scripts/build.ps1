@@ -1,9 +1,27 @@
 param(
     [string]$Python = ".\.venv\Scripts\python.exe",
-    [switch]$Install
+    [switch]$Install,
+    [switch]$PackageOnly,
+    [switch]$ForceStopInstalled,
+    [int]$UpdateWaitSeconds = 1800
 )
 
 $ErrorActionPreference = "Stop"
+
+if ($Install -and $PackageOnly) {
+    throw "-Install and -PackageOnly cannot be used together."
+}
+if ($PackageOnly -and $ForceStopInstalled) {
+    throw "-ForceStopInstalled is only valid when installing the local build."
+}
+if ($UpdateWaitSeconds -lt 1) {
+    throw "-UpdateWaitSeconds must be at least 1."
+}
+
+# Local builds should become the desktop build immediately. Automated and
+# explicitly package-only builds must not mutate the current machine.
+$isCi = $env:CI -match '^(1|true|yes)$'
+$installAfterBuild = $Install -or (-not $PackageOnly -and -not $isCi)
 
 if (-not (Test-Path -LiteralPath $Python)) {
     throw "Python environment not found: $Python"
@@ -52,56 +70,64 @@ $checksums = foreach ($asset in @($installer, $portable)) {
     "$hash  $(Split-Path $asset -Leaf)"
 }
 $checksums | Set-Content -LiteralPath "dist\SHA256SUMS-v$version.txt" -Encoding utf8
-if (-not $Install) {
-    Write-Host "Build complete. Install explicitly with -Install if desired."
+if (-not $installAfterBuild) {
+    Write-Host "Package build complete; the desktop installation and shortcut were not updated."
     return
 }
 $installDir = Join-Path $env:LOCALAPPDATA "Programs\WeChatChatExporter"
 $installedExe = Join-Path $installDir "WeChat-TXT-PDF-Exporter.exe"
-$installProcess = Start-Process -FilePath $installer -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-') -Wait -PassThru -WindowStyle Hidden
-if ($installProcess.ExitCode -ne 0) { throw "Installer failed: $($installProcess.ExitCode)" }
-
-$desktopDir = [Environment]::GetFolderPath("Desktop")
-if (-not $desktopDir) {
-    throw "Desktop directory could not be resolved."
+$resolvedInstalledExe = [System.IO.Path]::GetFullPath($installedExe)
+function Get-InstalledExporterProcesses {
+    @(Get-Process -Name "WeChat-TXT-PDF-Exporter" -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.Path -and [System.IO.Path]::GetFullPath($_.Path) -eq $resolvedInstalledExe
+        })
 }
-$wechatChatName = -join @(
-    [char]0x5FAE,
-    [char]0x4FE1,
-    [char]0x804A,
-    [char]0x5929
-)
-$exportName = -join @([char]0x5BFC, [char]0x51FA)
-$shortcutPath = Join-Path $desktopDir "$wechatChatName TXT-PDF $exportName.lnk"
-$shell = New-Object -ComObject WScript.Shell
-$shortcut = $shell.CreateShortcut($shortcutPath)
-$shortcut.TargetPath = $installedExe
-$shortcut.WorkingDirectory = $installDir
-$shortcut.IconLocation = "$installedExe,0"
-$shortcut.Description = "WeChat TXT/PDF chat and HTML/JSON Moments local exporter"
-$shortcut.WindowStyle = 1
-$shortcut.Save()
+$runningExporters = @(Get-InstalledExporterProcesses)
+if ($runningExporters.Count -gt 0) {
+    if ($ForceStopInstalled) {
+        $runningExporters | Stop-Process -Force -ErrorAction Stop
+    } else {
+        try {
+            $updateEvent = [System.Threading.EventWaitHandle]::OpenExisting(
+                "Local\WeChatChatExporter.v1.UpdateExit"
+            )
+        } catch [System.Threading.WaitHandleCannotBeOpenedException] {
+            throw "The running exporter predates safe update coordination. Exit it first, or explicitly use -ForceStopInstalled."
+        }
+        try {
+            if (-not $updateEvent.Set()) {
+                throw "Failed to request a safe shutdown from the running exporter."
+            }
+        } finally {
+            $updateEvent.Dispose()
+        }
+        Write-Host "Waiting for the running exporter to finish current work and exit safely..."
+    }
+    $deadline = [DateTime]::UtcNow.AddSeconds($UpdateWaitSeconds)
+    do {
+        Start-Sleep -Milliseconds 250
+        $runningExporters = @(Get-InstalledExporterProcesses)
+    } while ($runningExporters.Count -gt 0 -and [DateTime]::UtcNow -lt $deadline)
+    if ($runningExporters.Count -gt 0) {
+        throw "The running exporter did not exit within $UpdateWaitSeconds seconds; installation was not started."
+    }
+}
+$installProcess = Start-Process -FilePath $installer -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCLOSEAPPLICATIONS', '/SP-') -Wait -PassThru -WindowStyle Hidden
+if ($installProcess.ExitCode -ne 0) { throw "Installer failed: $($installProcess.ExitCode)" }
 
 $portableHash = (Get-FileHash -LiteralPath $portable -Algorithm SHA256).Hash
 $installedHash = (Get-FileHash -LiteralPath $installedExe -Algorithm SHA256).Hash
 if ($portableHash -ne $installedHash) {
     throw "Installed executable does not match the packaged executable."
 }
-$savedShortcut = $shell.CreateShortcut($shortcutPath)
-if ($savedShortcut.TargetPath -ne $installedExe) {
-    throw "Desktop shortcut target verification failed."
-}
-if ($savedShortcut.WorkingDirectory -ne $installDir) {
-    throw "Desktop shortcut working-directory verification failed."
-}
-if ($savedShortcut.IconLocation -ne "$installedExe,0") {
-    throw "Desktop shortcut icon verification failed."
-}
+
+& (Join-Path $PSScriptRoot "update_desktop_shortcut.ps1") `
+    -TargetPath $installedExe `
+    -WorkingDirectory $installDir
 
 Get-FileHash `
     $portable, `
     $installer, `
     $installedExe `
     -Algorithm SHA256
-
-Write-Host "Desktop shortcut updated: $shortcutPath"

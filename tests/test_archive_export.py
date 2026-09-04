@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+import threading
 from datetime import datetime
 from pathlib import Path
 
+import pytest
 from pypdf import PdfReader
 
+from wechat_exporter import service as service_module
 from wechat_exporter.archive import WeChatArchive
 from wechat_exporter.crypto import DatabaseKeys, DecryptedWorkspace
 from wechat_exporter.exporters import PdfTranscriptWriter, TxtTranscriptWriter
@@ -17,8 +20,10 @@ from wechat_exporter.models import (
     ExportWorkload,
     MediaReference,
     Message,
+    Moment,
 )
 from wechat_exporter.service import (
+    ExportCancelled,
     ExporterService,
     estimate_export_seconds,
     estimate_moments_export_seconds,
@@ -28,6 +33,125 @@ from wechat_exporter.service import (
 
 SELF = "wxid_self"
 FRIEND = "wxid_friend"
+
+
+def test_cancelled_chat_export_removes_only_this_run_artifacts(tmp_path) -> None:
+    conversation = Conversation(FRIEND, "好友")
+    messages = (
+        Message(1, 1, 1, SELF, "我", True, "第一条", conversation_id=FRIEND),
+        Message(2, 2, 1, FRIEND, "好友", False, "第二条", conversation_id=FRIEND),
+    )
+
+    class Archive:
+        self_wxid = SELF
+
+        def export_workload(self, *_args, **_kwargs):
+            return ExportWorkload(message_count=len(messages))
+
+        def iter_messages(self, *_args, **_kwargs):
+            yield from messages
+
+    output_dir = tmp_path / "chat-output"
+    output_dir.mkdir()
+    keep = output_dir / "用户原有文件.txt"
+    keep.write_text("keep", encoding="utf-8")
+    cancelled = threading.Event()
+    service = ExporterService(AccountLocation(tmp_path, SELF, "test"))
+    service.archive = Archive()  # type: ignore[assignment]
+
+    def stop_after_first_message(_message: str, fraction: float) -> None:
+        if fraction > 0:
+            cancelled.set()
+
+    with pytest.raises(ExportCancelled):
+        service.export(
+            ExportRequest(
+                conversations=(conversation,),
+                output_dir=output_dir,
+                include_txt=True,
+                include_pdf=False,
+            ),
+            progress=stop_after_first_message,
+            cancelled=cancelled,
+        )
+
+    assert keep.read_text(encoding="utf-8") == "keep"
+    assert [path for path in output_dir.rglob("*") if path.is_file()] == [keep]
+
+
+def test_cancelled_moments_export_removes_temporary_data(tmp_path) -> None:
+    conversation = Conversation(FRIEND, "好友")
+    moments = (
+        Moment("1", FRIEND, 1, "第一条朋友圈"),
+        Moment("2", FRIEND, 2, "第二条朋友圈"),
+    )
+
+    class Archive:
+        self_wxid = SELF
+
+        def contact_moments(self, *_args, **_kwargs):
+            return moments
+
+    output_dir = tmp_path / "moments-output"
+    output_dir.mkdir()
+    keep = output_dir / "用户原有文件.txt"
+    keep.write_text("keep", encoding="utf-8")
+    cancelled = threading.Event()
+    service = ExporterService(AccountLocation(tmp_path, SELF, "test"))
+    service.archive = Archive()  # type: ignore[assignment]
+
+    def stop_after_first_post(message: str, _fraction: float) -> None:
+        if "1/2" in message:
+            cancelled.set()
+
+    with pytest.raises(ExportCancelled):
+        service.export_moments_archive(
+            conversation,
+            output_dir,
+            progress=stop_after_first_post,
+            cancelled=cancelled,
+        )
+
+    assert keep.read_text(encoding="utf-8") == "keep"
+    assert [path for path in output_dir.rglob("*") if path.is_file()] == [keep]
+
+
+def test_cancelled_moments_export_rolls_back_an_already_published_archive(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    conversation = Conversation(FRIEND, "好友")
+
+    class Archive:
+        self_wxid = SELF
+
+        def contact_moments(self, *_args, **_kwargs):
+            return (Moment("1", FRIEND, 1, "朋友圈"),)
+
+    output_dir = tmp_path / "moments-output"
+    output_dir.mkdir()
+    keep = output_dir / "用户原有文件.txt"
+    keep.write_text("keep", encoding="utf-8")
+    cancelled = threading.Event()
+    original_publish = service_module._publish_directory
+
+    def publish_then_cancel(source, destination, **kwargs):
+        result = original_publish(source, destination, **kwargs)
+        cancelled.set()
+        return result
+
+    monkeypatch.setattr(service_module, "_publish_directory", publish_then_cancel)
+    service = ExporterService(AccountLocation(tmp_path, SELF, "test"))
+    service.archive = Archive()  # type: ignore[assignment]
+
+    with pytest.raises(ExportCancelled):
+        service.export_moments_archive(
+            conversation,
+            output_dir,
+            cancelled=cancelled,
+        )
+
+    assert [path for path in output_dir.rglob("*") if path.is_file()] == [keep]
 
 
 def test_metadata_stage_feasibility_and_incomplete_workload_boundary(tmp_path):
@@ -313,32 +437,43 @@ def test_wechat_voice_transcript_is_exported_without_media_decode(tmp_path) -> N
         assert messages[0].content == "[微信语音转文字] 今天下午三点见"
         assert messages[1].content == "[语音]"
         progress_updates: list[tuple[str, float]] = []
-        result = service.export(
+        txt_result = service.export(
             ExportRequest(
                 conversations=(conversation,),
-                output_dir=output_dir,
+                output_dir=output_dir / "txt",
                 include_txt=True,
-                include_pdf=True,
+                include_pdf=False,
                 include_wechat_voice_text=True,
             ),
             progress=lambda message, fraction: progress_updates.append(
                 (message, fraction)
             ),
         )
-        txt_path = next(path for path in result.files if path.suffix == ".txt")
-        pdf_path = next(path for path in result.files if path.suffix == ".pdf")
-        assert txt_path.parent == pdf_path.parent
+        pdf_result = service.export(
+            ExportRequest(
+                conversations=(conversation,),
+                output_dir=output_dir / "pdf",
+                include_txt=False,
+                include_pdf=True,
+                include_pdf_images=False,
+                include_wechat_voice_text=True,
+            )
+        )
+        txt_path = txt_result.files[0]
+        pdf_path = pdf_result.files[0]
         assert txt_path.parent.parent.name == "联系人"
+        assert pdf_path.parent.parent.name == "联系人"
         txt = txt_path.read_text(encoding="utf-8-sig")
         assert "[微信语音转文字] 今天下午三点见" in txt
         assert "[语音]（微信尚未生成转文字）" in txt
         extracted = "\n".join(page.extract_text() or "" for page in PdfReader(pdf_path).pages)
         assert "微信语音转文字" in extracted
         assert "今天下午三点见" in extracted
-        assert result.warnings == [
+        assert txt_result.warnings == [
             "微信语音转文字：已写入 1 条，微信尚未生成 1 条。"
         ]
-        assert result.duration_seconds > 0
+        assert pdf_result.warnings == txt_result.warnings
+        assert txt_result.duration_seconds > 0
         assert any("50%" in message for message, _fraction in progress_updates)
         assert progress_updates[-1][1] == 1.0
         assert "实际用时" in progress_updates[-1][0]
