@@ -170,7 +170,11 @@ def test_conversation_and_export_panes_use_fixed_chat_text_reference_height(app)
         - gui.PANE_SASH_ALLOWANCE,
         abs=2,
     )
-    assert app.sessions_frame.winfo_height() > app.export_frame.winfo_height()
+    assert app.export_frame.winfo_height() == pytest.approx(
+        app._chat_export_pane_height,
+        abs=gui.PANE_SASH_ALLOWANCE,
+    )
+    assert app.sessions_frame.winfo_height() >= 60
 
 
 @pytest.mark.parametrize("size", ["900x800", "1060x900"])
