@@ -10,7 +10,7 @@ from wechat_exporter.gui import VOICE_TEXT_GUIDE_STEPS
 
 def test_public_project_metadata() -> None:
     assert __version__ == "1.5.0"
-    assert PROJECT_URL == "https://github.com/julibeian/wechat-txt-pdf-exporter"
+    assert PROJECT_URL == "https://github.com/julibeian/wechat-local-exporter"
     assert not hasattr(gui, "STAR_PROMPT_DELAY_SECONDS")
     assert not hasattr(gui, "StarPrompt")
     assert len(VOICE_TEXT_GUIDE_STEPS) == 4
@@ -23,4 +23,7 @@ def test_packaging_versions_match_runtime_version() -> None:
     installer = (root / "packaging" / "installer.iss").read_text(encoding="utf-8")
 
     assert project["project"]["version"] == __version__
+    # Package and installer identities stay stable across the GitHub repository rename.
+    assert project["project"]["name"] == "wechat-txt-pdf-exporter"
     assert f'#define AppVersion "{__version__}"' in installer
+    assert "A7639FD4-469B-41C7-A3A0-901C8E6D12E3" in installer

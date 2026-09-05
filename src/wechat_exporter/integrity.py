@@ -5,6 +5,7 @@ import hmac
 
 
 _OWNER_MARKER = "julibeian"
+# Stable signature namespace. Repository renames must not invalidate existing receipts.
 _BINDING_CONTEXT = "wechat-txt-pdf-exporter|owner-signature|v1"
 _EXPECTED_DIGEST = "ee4bf1057ba5fecb23c33f620269cb7f4ea4ecf3ccfd1aabc7d1ac652fadb9fd"
 

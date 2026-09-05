@@ -27,7 +27,7 @@ def release_json(
     installed_payload=b"installed executable",
 ):
     prefix = (
-        "https://github.com/julibeian/wechat-txt-pdf-exporter/"
+        "https://github.com/julibeian/wechat-local-exporter/"
         f"releases/download/v{version}/"
     )
     name = f"WeChat-TXT-PDF-Exporter-Installer-v{version}.exe"
@@ -268,11 +268,15 @@ def test_installer_download_uses_hidden_installed_executable_hash(tmp_path):
     assert result.target_sha256 == hashlib.sha256(installed_payload).hexdigest()
 
 
-def test_legacy_release_still_uses_checksum_and_portable_target_hash(tmp_path):
+def test_legacy_release_and_repository_url_still_work(tmp_path):
     entry, blobs, installer_payload, portable_payload = legacy_release_json()
     transport = Transport([entry])
     transport.blobs = blobs
     release = GitHubSource(opener=transport).releases()[0]
+    assert transport.calls[0][0] == (
+        "https://api.github.com/repos/julibeian/wechat-local-exporter/"
+        "releases?per_page=30"
+    )
     result = GitHubSource(
         opener=transport, download_root=tmp_path / "updates"
     ).download(release, "installer")

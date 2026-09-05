@@ -44,16 +44,16 @@ def test_cli_selects_exact_tag_and_builds_one_installer_link(tmp_path):
     assert "未知发布者" in body
     assert "请只从本项目下载" in body
     assert (
-        "[下载最新版本](https://github.com/julibeian/wechat-txt-pdf-exporter/releases/latest)"
+        "[下载最新版本](https://github.com/julibeian/wechat-local-exporter/releases/latest)"
         in body
     )
     assert (
-        "[查看全部历史版本](https://github.com/julibeian/wechat-txt-pdf-exporter/releases)"
+        "[查看全部历史版本](https://github.com/julibeian/wechat-local-exporter/releases)"
         in body
     )
     assert (
         "觉得好用，欢迎点个 "
-        "[Star](https://github.com/julibeian/wechat-txt-pdf-exporter)。"
+        "[Star](https://github.com/julibeian/wechat-local-exporter)。"
         in body
     )
     assert "Neighbor release" not in body and "Older release" not in body
