@@ -2,7 +2,7 @@
 
 把本机微信记录导出为 JSON、TXT、PDF，或带图片、表情和视频的 JSONL 资料包。适合查找、归档，或交给 AI 分析。聊天内容在本机处理。
 
-**[下载 Windows 一键安装包](https://github.com/julibeian/wechat-txt-pdf-exporter/releases/latest)** · [使用方法](#使用方法) · [反馈问题](https://github.com/julibeian/wechat-txt-pdf-exporter/issues)
+**[下载 Windows 一键安装包](https://github.com/julibeian/wechat-local-exporter/releases/latest)** · [使用方法](#使用方法) · [反馈问题](https://github.com/julibeian/wechat-local-exporter/issues)
 
 ## 下载
 
@@ -35,7 +35,7 @@ JSON/TXT 适合快速导出纯文字。PDF 适合阅读；完整版会额外读�
 - 聊天数据库和导出内容不上传。检查更新只访问本项目 Release；朋友圈媒体和主动开启的媒体补全可能联网。
 - 缓存中的密钥受 Windows DPAPI 保护；缓存的解密数据库和导出文件仍是敏感数据，请妥善保管。
 
-这是个人边学边做的项目，目前只能算基本可用，离成熟还有明显距离。UI 较粗糙，作者开发经验和测试条件有限；不同微信版本、少见消息和大批量导出仍可能出错。请先用少量记录测试，欢迎提交 [问题、建议或测试结果](https://github.com/julibeian/wechat-txt-pdf-exporter/issues)，也欢迎 PR。请勿上传真实聊天、数据库、密钥或联系人信息。
+这是个人边学边做的项目，目前只能算基本可用，离成熟还有明显距离。UI 较粗糙，作者开发经验和测试条件有限；不同微信版本、少见消息和大批量导出仍可能出错。请先用少量记录测试，欢迎提交 [问题、建议或测试结果](https://github.com/julibeian/wechat-local-exporter/issues)，也欢迎 PR。请勿上传真实聊天、数据库、密钥或联系人信息。
 
 最新版本v1.5 后续更新主要以修复 潜在Bug、兼容微信更新和处理安全等问题 为主。
 

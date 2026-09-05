@@ -31,6 +31,13 @@ _TARGET_SHA256 = re.compile(
 )
 _HOSTS = {"api.github.com", "github.com", "release-assets.githubusercontent.com",
           "objects.githubusercontent.com"}
+_RELEASES_API_URL = (
+    "https://api.github.com/repos/julibeian/wechat-local-exporter/releases?per_page=30"
+)
+_TRUSTED_PROJECT_URLS = (
+    PROJECT_URL,
+    "https://github.com/julibeian/wechat-txt-pdf-exporter",
+)
 
 
 def version_tuple(value: str) -> tuple[int, int, int]:
@@ -121,8 +128,7 @@ class GitHubSource:
         self.download_root = download_root if download_root is not None else app_data_dir() / "updates"
 
     def releases(self) -> tuple[Release, ...]:
-        url = "https://api.github.com/repos/julibeian/wechat-txt-pdf-exporter/releases?per_page=30"
-        raw = json.loads(_read_bounded(url, self.opener))
+        raw = json.loads(_read_bounded(_RELEASES_API_URL, self.opener))
         if not isinstance(raw, list):
             raise ValueError("更新服务未返回版本列表")
         result = []
@@ -169,7 +175,11 @@ class GitHubSource:
                 else:
                     raise ValueError("更新文件摘要格式无效")
                 # Only release files in this repository; remote names never become arbitrary paths.
-                if (download_url != f"{PROJECT_URL}/releases/download/{tag}/{name}"
+                trusted_download_urls = {
+                    f"{project_url}/releases/download/{tag}/{name}"
+                    for project_url in _TRUSTED_PROJECT_URLS
+                }
+                if (download_url not in trusted_download_urls
                         or Path(name).name != name or "/" in name or "\\" in name
                         or not 0 < size <= MAX_DOWNLOAD):
                     continue

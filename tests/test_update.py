@@ -27,7 +27,7 @@ def release_json(
     installed_payload=b"installed executable",
 ):
     prefix = (
-        "https://github.com/julibeian/wechat-txt-pdf-exporter/"
+        "https://github.com/julibeian/wechat-local-exporter/"
         f"releases/download/v{version}/"
     )
     name = f"WeChat-TXT-PDF-Exporter-Installer-v{version}.exe"

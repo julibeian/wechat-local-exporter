@@ -10,7 +10,7 @@ from wechat_exporter.gui import VOICE_TEXT_GUIDE_STEPS
 
 def test_public_project_metadata() -> None:
     assert __version__ == "1.5.0"
-    assert PROJECT_URL == "https://github.com/julibeian/wechat-txt-pdf-exporter"
+    assert PROJECT_URL == "https://github.com/julibeian/wechat-local-exporter"
     assert not hasattr(gui, "STAR_PROMPT_DELAY_SECONDS")
     assert not hasattr(gui, "StarPrompt")
     assert len(VOICE_TEXT_GUIDE_STEPS) == 4

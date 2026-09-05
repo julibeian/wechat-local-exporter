@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 
-RELEASES_URL = "https://github.com/julibeian/wechat-txt-pdf-exporter/releases"
+RELEASES_URL = "https://github.com/julibeian/wechat-local-exporter/releases"
 
 RELEASE_DISCLOSURE = """## 使用前
 
