@@ -42,20 +42,7 @@ def test_cli_selects_exact_tag_and_builds_one_installer_link(tmp_path):
     assert "个人项目" in body
     assert "不上传" in body
     assert "未知发布者" in body
-    assert "请只从本项目下载" in body
-    assert (
-        "[下载最新版本](https://github.com/julibeian/wechat-txt-pdf-exporter/releases/latest)"
-        in body
-    )
-    assert (
-        "[查看全部历史版本](https://github.com/julibeian/wechat-txt-pdf-exporter/releases)"
-        in body
-    )
-    assert (
-        "觉得好用，欢迎点个 "
-        "[Star](https://github.com/julibeian/wechat-txt-pdf-exporter)。"
-        in body
-    )
+    assert "v1.3 及更早版本" in body
     assert "Neighbor release" not in body and "Older release" not in body
     links = re.findall(r"\]\((https://[^)]+/download/[^)]+)\)", body)
     assert [link.rsplit("/", 1)[1] for link in links] == [

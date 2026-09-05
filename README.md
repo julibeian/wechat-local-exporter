@@ -2,7 +2,7 @@
 
 把本机微信记录导出为 JSON、TXT、PDF，或带图片、表情和视频的 JSONL 资料包。适合查找、归档，或交给 AI 分析。聊天内容在本机处理。
 
-**[下载最新版本](https://github.com/julibeian/wechat-txt-pdf-exporter/releases/latest)** · [使用方法](#使用方法) · [历史版本](#历史版本) · [反馈问题](https://github.com/julibeian/wechat-txt-pdf-exporter/issues)
+**[下载 Windows 一键安装包](https://github.com/julibeian/wechat-txt-pdf-exporter/releases/latest)** · [使用方法](#使用方法) · [反馈问题](https://github.com/julibeian/wechat-txt-pdf-exporter/issues)
 
 ## 下载
 
@@ -37,16 +37,7 @@ JSON/TXT 适合快速导出纯文字。PDF 适合阅读；完整版会额外读�
 
 这是个人边学边做的项目，目前只能算基本可用，离成熟还有明显距离。UI 较粗糙，作者开发经验和测试条件有限；不同微信版本、少见消息和大批量导出仍可能出错。请先用少量记录测试，欢迎提交 [问题、建议或测试结果](https://github.com/julibeian/wechat-txt-pdf-exporter/issues)，也欢迎 PR。请勿上传真实聊天、数据库、密钥或联系人信息。
 
-v1.5 是最后一个以新增功能为主的版本。后续主要修复 Bug，并处理微信兼容和安全问题。
-
-## 历史版本
-
-- **[v1.5.0](https://github.com/julibeian/wechat-txt-pdf-exporter/releases/tag/v1.5.0)**（最新）：四类导出任务、同账号缓存和托盘后台导出。
-- **[v1.3.0](https://github.com/julibeian/wechat-txt-pdf-exporter/releases/tag/v1.3.0)**：软件内更新、多账号连接修复和更新失败恢复。
-- **[v1.2.0](https://github.com/julibeian/wechat-txt-pdf-exporter/releases/tag/v1.2.0)**：朋友圈离线归档、媒体处理和 SHA-256 清单。
-- **[v1.0.0](https://github.com/julibeian/wechat-txt-pdf-exporter/releases/tag/v1.0.0)**：首个公开版，支持 TXT、快速 PDF 和完整 PDF。
-
-v1.1 和 v1.4 未单独发布 GitHub Release，相关改动分别并入 v1.2.0 和 v1.5.0。更早的 v0.x 为本地开发版本。
+最新版本v1.5 后续更新主要以修复 潜在Bug、兼容微信更新和处理安全等问题 为主。
 
 ## 开发
 
