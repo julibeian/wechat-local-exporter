@@ -12,7 +12,7 @@ apply_sync_plan = module["apply_sync_plan"]
 build_sync_plan = module["build_sync_plan"]
 parse_release_sections = module["parse_release_sections"]
 
-REPOSITORY = "julibeian/wechat-local-exporter"
+REPOSITORY = "julibeian/wechat-txt-pdf-exporter"
 TARGET_HASH = "a" * 64
 
 
