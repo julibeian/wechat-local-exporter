@@ -39,7 +39,7 @@ JSON/TXT 适合快速导出纯文字。PDF 适合阅读；完整版会额外读�
 
 欢迎大家参与讨论与共建 [问题、建议或测试结果](https://github.com/julibeian/wechat-local-exporter/issues)。
 
-如果您觉得这个项目对您有所帮助，欢迎在 GitHub 上点亮 **Star** ，感谢支持与鼓励！
+如果觉得这个项目对您有所帮助，欢迎在 GitHub 上点亮 **Star** ，感谢您的支持与鼓励！
 
 ## 开发
 
