@@ -7,13 +7,12 @@ import re
 from pathlib import Path
 
 
-RELEASES_URL = "https://github.com/julibeian/wechat-txt-pdf-exporter/releases"
+PROJECT_URL = "https://github.com/julibeian/wechat-txt-pdf-exporter"
+RELEASES_URL = f"{PROJECT_URL}/releases"
 
 RELEASE_DISCLOSURE = """## 使用前
 
-- 这是个人项目，界面和导出兼容仍可能有问题。请先用少量记录试用，确认结果后再批量导出。
-- 聊天内容在本机处理，不上传，也不修改微信。本机没有的记录无法补齐；朋友圈媒体和主动开启的媒体补全可能联网。
-- 安装包没有商业代码签名，Windows 可能提示“未知发布者”。v1.3 及更早版本请手动安装一次 v1.5。
+这是个人项目，请先用少量记录试用。聊天内容在本机处理，不上传，也不修改微信；朋友圈媒体和主动开启的媒体补全可能联网。安装包没有商业代码签名，Windows 可能提示“未知发布者”，请只从本项目下载。
 """
 
 
@@ -45,6 +44,8 @@ def render_release_notes(
         raise ValueError("Expected the SHA-256 of the installed executable")
     download_url = f"{RELEASES_URL}/download/{tag}/{installer}"
     return "\n".join([
+        f"[下载最新版本]({RELEASES_URL}/latest) · [查看全部历史版本]({RELEASES_URL})",
+        "",
         "## 下载",
         "",
         f"**[下载 {tag} 一键安装包]({download_url})**",
@@ -56,6 +57,8 @@ def render_release_notes(
         sections[0],
         "",
         RELEASE_DISCLOSURE.rstrip(),
+        "",
+        f"觉得好用，欢迎点个 [Star]({PROJECT_URL})。",
         "",
         f"<!-- wechat-exporter-target-sha256:{installed_exe_sha256.lower()} -->",
         "",
