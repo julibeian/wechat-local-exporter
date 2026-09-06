@@ -68,9 +68,24 @@ def test_jsonl_is_one_valid_utf8_json_object_per_physical_line(tmp_path) -> None
     assert records[0]["conversation_type"] == "group"
     assert records[0]["sender_name"] == "班长"
     assert records[0]["text"] == "中文😀\n第二行"
+    assert records[0]["raw_text"] is None
     assert records[1]["type"] == "system"
     assert records[2]["type"] == "quote"
     assert records[2]["text"] == "[引用] 原文没有丢"
+
+
+def test_jsonl_writes_visible_native_face_and_retains_raw_text(tmp_path) -> None:
+    conversation = Conversation("wxid_friend", "好友")
+    path = tmp_path / "native-face.jsonl"
+    with JsonlTranscriptWriter(path, conversation) as writer:
+        writer.write(_message(1, "收到[爱心]"))
+
+    raw = path.read_bytes()
+    assert "收到❤️".encode("utf-8") in raw
+    assert b"\\u2764" not in raw
+    record = json.loads(raw.decode("utf-8"))
+    assert record["text"] == "收到❤️"
+    assert record["raw_text"] == "收到[爱心]"
 
 
 def test_jsonl_voice_transcript_and_missing_transcript_are_structured() -> None:

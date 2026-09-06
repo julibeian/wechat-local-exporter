@@ -14,6 +14,7 @@ import time
 
 from .archive import SenderCalibration, WeChatArchive
 from .attachments import AttachmentResolver, export_conversation_attachments
+from .chat_html_archive import ChatArchiveMedia, export_chat_html_archive
 from .crypto import (
     DecryptedWorkspace,
     collect_required_databases,
@@ -248,10 +249,15 @@ class ExporterService:
         if request.include_jsonl:
             raise ValueError("JSONL 已改为 AI 完整资料包，请使用高级资料包导出。")
         selected_formats = sum(
-            (request.include_json, request.include_txt, request.include_pdf)
+            (
+                request.include_json,
+                request.include_txt,
+                request.include_pdf,
+                request.include_html,
+            )
         )
         if selected_formats != 1:
-            raise ValueError("普通聊天每次只能选择 JSON、TXT、PDF 中的一种格式。")
+            raise ValueError("普通聊天每次只能选择 HTML、JSON、TXT、PDF 中的一种格式。")
         if any(conversation.is_self for conversation in request.conversations):
             raise ValueError("“我自己”只用于朋友圈归档，不能导出聊天记录。")
         started_at = time.perf_counter()
@@ -264,6 +270,14 @@ class ExporterService:
             end_timestamp=request.end_timestamp,
         )
         _raise_if_cancelled(cancelled)
+        if request.include_html:
+            return self._export_chat_html(
+                request,
+                workload=workload,
+                started_at=started_at,
+                progress=progress,
+                cancelled=cancelled,
+            )
         total_messages = workload.message_count
         completed_messages = 0
         progress_step = max(1, total_messages // 200)
@@ -456,6 +470,235 @@ class ExporterService:
         if progress:
             progress(
                 f"聊天导出 100% · {completed_messages} 条 · "
+                f"实际用时 {format_duration(result.duration_seconds)}",
+                1.0,
+            )
+        return result
+
+    def _export_chat_html(
+        self,
+        request: ExportRequest,
+        *,
+        workload: ExportWorkload,
+        started_at: float,
+        progress: Callable[[str, float], None] | None,
+        cancelled: threading.Event | None,
+    ) -> ExportResult:
+        """Create one atomic, offline-readable HTML archive per conversation."""
+
+        assert self.archive is not None
+        options = request.html_options
+        created_directories: list[Path] = []
+        published_directories: list[Path] = []
+        _mkdir_tracked(request.output_dir, created_directories)
+        result = ExportResult()
+        total_messages = workload.message_count
+        completed_messages = 0
+        progress_step = max(1, total_messages // 200)
+        last_progress_at = started_at
+        voice_count = 0
+        official_voice_count = 0
+        missing_voice_count = 0
+
+        image_resolver = (
+            MediaResolver(
+                self.account,
+                self.archive.self_wxid,
+                allow_network=options.allow_network_completion,
+            )
+            if options.include_images or options.include_stickers
+            else None
+        )
+        video_locator = ChatVideoLocator(self.account) if options.include_videos else None
+        attachment_resolver = (
+            AttachmentResolver(self.account, request.conversations)
+            if options.include_file_binaries
+            else None
+        )
+
+        def resolve_media(message: Message) -> object | None:
+            reference = message.media
+            if reference is not None and reference.kind == "video":
+                if video_locator is None:
+                    return None
+                path = video_locator.find(message)
+                if path is None:
+                    return None
+                return ChatArchiveMedia(
+                    kind="video",
+                    path=path,
+                    extension=path.suffix.lstrip("."),
+                    filename=path.name,
+                )
+            return image_resolver.resolve(message) if image_resolver is not None else None
+
+        def resolve_attachment(message: Message) -> object | None:
+            if attachment_resolver is None:
+                return None
+            path = attachment_resolver.resolve(message)
+            if path is None:
+                return None
+            reference = message.attachment
+            return ChatArchiveMedia(
+                kind="file",
+                path=path,
+                extension=(
+                    (reference.extension or path.suffix.lstrip("."))
+                    if reference is not None
+                    else path.suffix.lstrip(".")
+                ),
+                filename=(reference.filename if reference is not None else path.name),
+            )
+
+        try:
+            conversation_total = len(request.conversations)
+            for conversation_index, conversation in enumerate(
+                request.conversations,
+                start=1,
+            ):
+                _raise_if_cancelled(cancelled)
+                conversation_dir = _conversation_output_dir(
+                    request.output_dir,
+                    conversation,
+                )
+                _mkdir_tracked(conversation_dir, created_directories)
+                archive_dir = _available_directory(
+                    conversation_dir,
+                    safe_filename(f"{conversation.display_name}_聊天记录_HTML"),
+                )
+                conversation_processed = 0
+
+                def html_progress(processed: int, _total: int | None) -> None:
+                    nonlocal conversation_processed, last_progress_at
+                    conversation_processed = processed
+                    overall_count = completed_messages + processed
+                    now = time.perf_counter()
+                    if not progress or not (
+                        overall_count >= total_messages
+                        or overall_count % progress_step == 0
+                        or now - last_progress_at >= 0.2
+                    ):
+                        return
+                    raw_fraction = min(
+                        1.0,
+                        overall_count / total_messages
+                        if total_messages > 0
+                        else conversation_index / max(1, conversation_total),
+                    )
+                    remaining = (
+                        (now - started_at)
+                        / overall_count
+                        * max(0, total_messages - overall_count)
+                        if overall_count > 0
+                        else 0.0
+                    )
+                    progress(
+                        f"正在生成离线 HTML {raw_fraction * 100:.0f}% · "
+                        f"{overall_count}/{total_messages} 条"
+                        + (
+                            f" · 剩余约 {format_duration(remaining)}"
+                            if remaining >= 1
+                            else ""
+                        ),
+                        min(0.98, raw_fraction * 0.98),
+                    )
+                    last_progress_at = now
+
+                def messages_for_html() -> Iterator[Message]:
+                    nonlocal voice_count, official_voice_count, missing_voice_count
+                    messages = self.archive.iter_messages(
+                        conversation,
+                        start_timestamp=request.start_timestamp,
+                        end_timestamp=request.end_timestamp,
+                    )
+                    for message in messages:
+                        _raise_if_cancelled(cancelled)
+                        if message.message_type == 34:
+                            voice_count += 1
+                            has_official_text = message.content.startswith(
+                                WECHAT_VOICE_TEXT_PREFIX
+                            )
+                            if request.include_wechat_voice_text:
+                                if has_official_text:
+                                    official_voice_count += 1
+                                else:
+                                    missing_voice_count += 1
+                                    message = replace(
+                                        message,
+                                        content="[语音]（微信尚未生成转文字）",
+                                    )
+                            else:
+                                message = replace(message, content="[语音]")
+                        yield message
+
+                with tempfile.TemporaryDirectory(
+                    prefix=".聊天HTML构建-",
+                    dir=conversation_dir,
+                ) as temporary:
+                    temporary_dir = Path(temporary)
+                    html_result = export_chat_html_archive(
+                        root=temporary_dir,
+                        conversation=conversation,
+                        messages=messages_for_html(),
+                        options=options,
+                        profiles=getattr(self.archive, "profile_store", None),
+                        avatar_resolver=getattr(self.archive, "avatar_resolver", None),
+                        media_resolver=resolve_media,
+                        attachment_resolver=resolve_attachment,
+                        check_cancelled=lambda: _raise_if_cancelled(cancelled),
+                        progress=html_progress,
+                    )
+                    _raise_if_cancelled(cancelled)
+                    if progress:
+                        progress(
+                            f"正在完成 {conversation.display_name} 的离线 HTML...",
+                            min(0.99, (conversation_index - 0.05) / max(1, conversation_total)),
+                        )
+                    _publish_directory(
+                        temporary_dir,
+                        archive_dir,
+                        cancelled=cancelled,
+                    )
+                    published_directories.append(archive_dir)
+                    _raise_if_cancelled(cancelled)
+
+                completed_messages += conversation_processed
+                entrypoint = archive_dir / html_result.entrypoint.relative_to(
+                    html_result.root
+                )
+                result.files.append(entrypoint)
+                result.file_conversations[entrypoint] = conversation
+                result.file_categories[entrypoint] = "chat"
+                result.message_counts[conversation.username] = html_result.message_count
+                result.warnings.extend(html_result.warnings)
+                if html_result.missing_media_count:
+                    result.warnings.append(
+                        f"{conversation.display_name}：有 {html_result.missing_media_count} 个"
+                        "图片、表情、视频或文件原件在本机不可用；HTML 中已明确标注。"
+                    )
+        except BaseException:
+            for directory in reversed(published_directories):
+                _remove_cancelled_tree(directory)
+            _cleanup_cancelled_files((), created_directories)
+            raise
+
+        if request.include_wechat_voice_text and voice_count:
+            result.warnings.append(
+                f"微信语音转文字：已写入 {official_voice_count} 条，"
+                f"微信尚未生成 {missing_voice_count} 条。"
+            )
+        if image_resolver and image_resolver.stats.requested:
+            result.warnings.append(image_resolver.stats.summary())
+            result.warnings.extend(sorted(image_resolver.stats.issues))
+        if cancelled is not None and cancelled.is_set():
+            for directory in reversed(published_directories):
+                _remove_cancelled_tree(directory)
+            _cleanup_cancelled_files((), created_directories)
+            raise ExportCancelled("导出已由用户中断")
+        result.duration_seconds = time.perf_counter() - started_at
+        if progress:
+            progress(
+                f"离线 HTML 导出 100% · {completed_messages} 条 · "
                 f"实际用时 {format_duration(result.duration_seconds)}",
                 1.0,
             )
@@ -899,10 +1142,11 @@ def estimate_export_seconds(
     include_pdf_images: bool,
     include_jsonl: bool = False,
     include_json: bool = False,
+    include_html: bool = False,
 ) -> tuple[float, float]:
     """Return a conservative local-machine estimate range before export."""
     if workload.message_count <= 0 or not (
-        include_json or include_jsonl or include_txt or include_pdf
+        include_json or include_jsonl or include_txt or include_pdf or include_html
     ):
         return 0.0, 0.0
 
@@ -912,16 +1156,19 @@ def estimate_export_seconds(
         + (0.00014 if include_jsonl else 0.0)
         + (0.00012 if include_txt else 0.0)
         + (0.0009 if include_pdf else 0.0)
+        + (0.00035 if include_html else 0.0)
     )
     likely = fixed + text_seconds
-    if include_pdf and include_pdf_images:
-        likely += workload.image_count * 0.06 + workload.emoticon_count * 0.55
+    if (include_pdf and include_pdf_images) or include_html:
+        image_cost = 0.045 if include_html else 0.06
+        emoticon_cost = 0.35 if include_html else 0.55
+        likely += workload.image_count * image_cost + workload.emoticon_count * emoticon_cost
         lower = likely * 0.65
         upper = (
             fixed
             + text_seconds * 1.8
-            + workload.image_count * 0.22
-            + workload.emoticon_count * 3.0
+            + workload.image_count * (0.18 if include_html else 0.22)
+            + workload.emoticon_count * (2.0 if include_html else 3.0)
         )
     else:
         lower = likely * 0.7

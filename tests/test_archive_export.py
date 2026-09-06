@@ -306,6 +306,27 @@ def test_txt_and_pdf_are_searchable(tmp_path) -> None:
         workspace.close()
 
 
+def test_txt_displays_verified_native_faces(tmp_path) -> None:
+    conversation = Conversation("wxid_friend", "好友")
+    message = Message(
+        local_id=1,
+        timestamp=int(datetime(2026, 8, 23, 12, 0).timestamp()),
+        message_type=1,
+        sender_id=FRIEND,
+        sender_name="好友",
+        is_outgoing=False,
+        content="收到[爱心]",
+    )
+    path = tmp_path / "native-face.txt"
+
+    with TxtTranscriptWriter(path, conversation) as writer:
+        writer.write(message)
+
+    exported = path.read_text(encoding="utf-8-sig")
+    assert "收到❤️" in exported
+    assert "收到[爱心]" not in exported
+
+
 def test_conversations_only_include_personal_contacts_and_groups(tmp_path) -> None:
     keys = DatabaseKeys(
         {

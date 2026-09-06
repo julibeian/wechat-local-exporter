@@ -8,8 +8,13 @@ from PyInstaller.utils.hooks import collect_all
 root = Path(SPEC).resolve().parent.parent
 project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
 version = project["project"]["version"]
+html_assets = root / "src" / "wechat_exporter" / "html_assets"
 
-datas = [(str(root / "THIRD_PARTY_NOTICES.md"), "."), (str(root / "RELEASE_NOTES.md"), ".")]
+datas = [
+    (str(root / "THIRD_PARTY_NOTICES.md"), "."),
+    (str(root / "RELEASE_NOTES.md"), "."),
+    (str(html_assets), "wechat_exporter/html_assets"),
+]
 binaries = []
 hiddenimports = []
 frida_data, frida_binaries, frida_hiddenimports = collect_all("frida")

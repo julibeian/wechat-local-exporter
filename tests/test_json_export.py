@@ -59,12 +59,31 @@ def test_json_text_export_is_valid_utf8_and_contains_only_text_message_fields(tm
             "time": datetime(2026, 9, 2, 10, 0, 1).isoformat(timespec="seconds"),
             "sender": "好友😀",
             "text": "第一行\n第二行😀",
+            "raw_text": None,
         }
     ]
     encoded = json.dumps(payload, ensure_ascii=False)
     assert "attachment" not in encoded
     assert "source_db" not in encoded
     assert "message_type" not in encoded
+
+
+def test_json_text_export_writes_visible_native_face_and_retains_raw_text(tmp_path) -> None:
+    conversation = Conversation("wxid_friend", "好友")
+    path = tmp_path / "native-face.json"
+    with JsonTextTranscriptWriter(path, conversation) as writer:
+        writer.write(_message(1, "收到[爱心]"))
+
+    raw = path.read_bytes()
+    assert "收到❤️".encode("utf-8") in raw
+    assert b"\\u2764" not in raw
+    assert json.loads(raw.decode("utf-8"))["messages"][0] == {
+        "timestamp": int(datetime(2026, 9, 2, 10, 0, 1).timestamp()),
+        "time": datetime(2026, 9, 2, 10, 0, 1).isoformat(timespec="seconds"),
+        "sender": "好友😀",
+        "text": "收到❤️",
+        "raw_text": "收到[爱心]",
+    }
 
 
 def test_json_only_service_export_does_not_create_other_chat_formats(
@@ -148,15 +167,19 @@ def test_export_request_defaults_to_exactly_one_fast_text_format(tmp_path) -> No
     assert request.include_pdf is False
     assert request.include_pdf_images is False
     assert request.include_jsonl is False
+    assert request.include_html is False
 
 
 @pytest.mark.parametrize(
-    ("include_json", "include_txt", "include_pdf"),
+    ("include_json", "include_txt", "include_pdf", "include_html"),
     [
-        (False, False, False),
-        (True, True, False),
-        (True, False, True),
-        (False, True, True),
+        (False, False, False, False),
+        (True, True, False, False),
+        (True, False, True, False),
+        (False, True, True, False),
+        (True, False, False, True),
+        (False, True, False, True),
+        (False, False, True, True),
     ],
 )
 def test_service_rejects_zero_or_multiple_ordinary_formats(
@@ -164,6 +187,7 @@ def test_service_rejects_zero_or_multiple_ordinary_formats(
     include_json: bool,
     include_txt: bool,
     include_pdf: bool,
+    include_html: bool,
 ) -> None:
     class Archive:
         self_wxid = "wxid_self"
@@ -182,6 +206,7 @@ def test_service_rejects_zero_or_multiple_ordinary_formats(
                 include_json=include_json,
                 include_txt=include_txt,
                 include_pdf=include_pdf,
+                include_html=include_html,
             )
         )
 

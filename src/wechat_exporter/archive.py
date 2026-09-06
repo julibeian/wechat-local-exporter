@@ -14,6 +14,13 @@ from .attachments import extract_attachment_reference
 from .media import extract_media_reference
 from .models import AccountLocation, Conversation, ExportWorkload, Message, Moment
 from .moments import load_contact_moments
+from .profiles import (
+    AvatarResolver,
+    ContactProfile,
+    ProfileStore,
+    ResolvedAvatar,
+    load_contact_profiles,
+)
 
 
 _SYSTEM_CONVERSATION_IDS = frozenset(
@@ -67,6 +74,9 @@ class WeChatArchive:
         self.workspace = workspace
         self.self_wxid = _clean_account_wxid(account.wxid)
         self.contacts: dict[str, str] = {}
+        self.profiles: dict[str, ContactProfile] = {}
+        self.profile_store = ProfileStore.empty(account)
+        self.avatar_resolver = AvatarResolver(account)
         self.personal_contacts: set[str] = set()
         self._calibrations = {
             (item.source_db, item.sender_id): item.role for item in calibrations or []
@@ -79,6 +89,34 @@ class WeChatArchive:
             prefix_matches = [value for value in self.contacts if self.account.wxid.startswith(value)]
             if prefix_matches:
                 self.self_wxid = max(prefix_matches, key=len)
+
+    def profile_for(self, username: str, *, group_id: str = "") -> ContactProfile:
+        """Return structured contact metadata with an optional verified group alias."""
+
+        store = getattr(self, "profile_store", None)
+        if store is not None:
+            return store.profile_for(username, group_id=group_id)
+        # Compatibility for focused callers/tests that historically created an
+        # archive shell with ``object.__new__`` and populated only ``contacts``.
+        # The fallback keeps the former name lookup without inventing profile
+        # fields or group aliases.
+        name = getattr(self, "contacts", {}).get(username, "")
+        return ContactProfile(username=username, remark=name)
+
+    def get_profile(self, username: str, *, group_id: str = "") -> ContactProfile:
+        return self.profile_for(username, group_id=group_id)
+
+    def resolve_avatar(self, username: str, *, group_id: str = "") -> ResolvedAvatar:
+        return self.avatar_resolver.resolve(
+            self.profile_for(username, group_id=group_id)
+        )
+
+    def participants_for(
+        self,
+        conversation_id: str,
+        sender_ids: Iterable[str] | None = None,
+    ) -> tuple[ContactProfile, ...]:
+        return self.profile_store.participants_for(conversation_id, sender_ids)
 
     def conversations(self) -> list[Conversation]:
         path = self.workspace.decrypted_path("session\\session.db")
@@ -297,29 +335,14 @@ class WeChatArchive:
         )
 
     def _load_contacts(self) -> dict[str, str]:
-        path = self.workspace.decrypted_path("contact\\contact.db")
-        connection = _connect_readonly(path)
-        contacts: dict[str, str] = {}
-        try:
-            table = _find_table(connection, ("contact", "Contact"))
-            if not table:
-                return contacts
-            for row in connection.execute(f'SELECT * FROM "{table}"'):
-                keys = set(row.keys())
-                username = str(_first(row, keys, ("username", "user_name"), "")).strip()
-                if not username:
-                    continue
-                display = username
-                for field in ("remark", "nick_name", "nickname", "alias"):
-                    if field in keys and str(row[field] or "").strip():
-                        display = str(row[field]).strip()
-                        break
-                contacts[username] = display
-                if _is_personal_contact(row, keys, username):
-                    self.personal_contacts.add(username)
-        finally:
-            connection.close()
-        return contacts
+        store = load_contact_profiles(self.account, self.workspace)
+        self.profile_store = store
+        self.profiles = dict(store.profiles)
+        self.personal_contacts.update(store.personal_usernames)
+        return {
+            username: profile.display_name
+            for username, profile in self.profiles.items()
+        }
 
     def _message_databases(self) -> list[tuple[str, Path]]:
         values = []
@@ -437,7 +460,8 @@ class WeChatArchive:
         if sender_id == self.self_wxid:
             sender_name = "我"
         else:
-            sender_name = self.contacts.get(sender_id, sender_id)
+            group_id = conversation.username if conversation.is_group else ""
+            sender_name = self.profile_for(sender_id, group_id=group_id).display_name
         content = parse_message_text(message_type, stripped_raw)
         media = extract_media_reference(
             message_type,

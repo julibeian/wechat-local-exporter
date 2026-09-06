@@ -4,6 +4,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from .faces import normalize_wechat_faces
 from .models import Conversation, Message
 
 
@@ -48,13 +49,15 @@ class JsonTextTranscriptWriter:
     def write(self, message: Message) -> None:
         if not self._first:
             self._stream.write(",")
+        display_text = normalize_wechat_faces(message.content)
         self._stream.write(
             json.dumps(
                 {
                     "timestamp": message.timestamp,
                     "time": message.datetime.isoformat(timespec="seconds"),
                     "sender": message.sender_name,
-                    "text": message.content or "",
+                    "text": display_text.text,
+                    "raw_text": display_text.raw_text,
                 },
                 ensure_ascii=False,
                 separators=(",", ":"),

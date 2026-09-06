@@ -34,7 +34,9 @@ from .models import (
     ChatFileExportRequest,
     Conversation,
     ExportRequest,
+    ExportResult,
     ExportWorkload,
+    HtmlExportOptions,
     JsonlPackageRequest,
 )
 from .service import (
@@ -55,7 +57,7 @@ VOICE_TEXT_GUIDE_STEPS = (
     "在微信中打开含语音消息的聊天。",
     "电脑版：右键语音气泡，选择“转文字”；手机端：长按语音气泡，选择“转文字”。",
     "等待文字完整显示在语音气泡下方。不要在转写仍进行时立即关闭微信。",
-    "回到本工具连接微信，再导出 JSON、TXT、PDF 或高级聊天资料包；这些方式都会保留微信已有转写。",
+    "回到本工具连接微信，再导出 HTML、JSON、TXT、PDF 或高级聊天资料包；这些方式都会保留微信已有转写。",
 )
 LOCAL_DATA_NOTICE = (
     "建议在该微信账号长期使用的 Windows 电脑上运行。本工具仅读取这台电脑本地已经保存的微信数据库，"
@@ -65,17 +67,18 @@ LOCAL_DATA_NOTICE = (
 USAGE_GUIDE_SECTIONS = (
     (
         "选择导出方式",
-        "聊天文字\n适合日常查看和文字分析。JSON 最快，TXT 最通用，PDF 适合阅读。\n\n"
+        "聊天记录\nHTML 可离线还原头像、图片和表情，适合阅读；JSON/TXT 适合文字处理，PDF 作为旧版格式保留。\n\n"
         "AI 完整资料包\n每个会话生成一个 ZIP，包含 messages.jsonl、清单以及本机已有媒体。\n\n"
         "批量聊天文件\n集中提取聊天中发送的 Word、PDF、Excel、压缩包等普通附件。\n\n"
         "朋友圈归档\n生成可离线浏览的 HTML、JSON 和能够取得的原始媒体。",
     ),
     (
-        "JSON、TXT 与 PDF",
-        "JSON：默认且最快，只保存对话文字，适合程序或 AI 快速读取。\n\n"
+        "HTML、JSON、TXT 与 PDF",
+        "HTML：默认推荐，生成带头像、图片、动态表情、搜索和筛选的离线聊天记录。\n\n"
+        "JSON：只保存对话文字，适合程序或 AI 快速读取。\n\n"
         "TXT：纯文本，兼容范围最广。\n\n"
         "PDF 快速版：保留阅读排版，图片和表情写成文字占位。\n\n"
-        "PDF 完整版：额外读取本机已有图片和表情，信息更完整，但耗时明显增加。",
+        "PDF 完整版：旧版兼容功能；额外读取本机已有图片和表情，耗时明显增加。",
     ),
     (
         "AI 完整资料包",
@@ -903,8 +906,15 @@ class ExporterApp:
         self.end_var = tk.StringVar()
         self.range_var = tk.StringVar(value="全部日期")
         self.task_var = tk.StringVar(value="")
-        self.chat_format_var = tk.StringVar(value="json")
+        self.chat_format_var = tk.StringVar(value="html")
         self.pdf_images_var = tk.BooleanVar(value=False)
+        self.html_system_messages_var = tk.BooleanVar(value=True)
+        self.html_media_var = tk.BooleanVar(value=True)
+        self.html_file_metadata_var = tk.BooleanVar(value=True)
+        self.html_file_binaries_var = tk.BooleanVar(value=False)
+        self.html_videos_var = tk.BooleanVar(value=False)
+        self.html_group_names_var = tk.BooleanVar(value=True)
+        self.html_network_var = tk.BooleanVar(value=False)
         self.package_include_videos_var = tk.BooleanVar(value=True)
         self.package_video_limit_var = tk.StringVar(value="100")
         self.package_network_var = tk.BooleanVar(value=False)
@@ -929,6 +939,13 @@ class ExporterApp:
             self.task_var,
             self.chat_format_var,
             self.pdf_images_var,
+            self.html_system_messages_var,
+            self.html_media_var,
+            self.html_file_metadata_var,
+            self.html_file_binaries_var,
+            self.html_videos_var,
+            self.html_group_names_var,
+            self.html_network_var,
             self.package_include_videos_var,
             self.package_video_limit_var,
             self.package_network_var,
@@ -1099,7 +1116,7 @@ class ExporterApp:
         ).pack(side="left", padx=(0, 12))
         self.task_buttons: dict[str, ttk.Radiobutton] = {}
         for value, label in (
-            ("chat", "聊天文字"),
+            ("chat", "聊天记录"),
             ("jsonl_package", "AI 完整资料包"),
             ("chat_files", "批量聊天文件"),
             ("moments", "朋友圈归档"),
@@ -1150,16 +1167,17 @@ class ExporterApp:
 
         self.chat_options_frame = ttk.LabelFrame(
             export,
-            text="3. 选择聊天文字格式",
+            text="3. 选择聊天导出格式",
             padding=(9, 6),
         )
         self.chat_options_frame.grid(row=3, column=0, sticky="ew", pady=(4, 0))
         format_row = ttk.Frame(self.chat_options_frame)
         format_row.pack(fill="x")
         for value, label in (
+            ("html", "HTML（图文阅读，推荐）"),
             ("json", "JSON（最快）"),
             ("txt", "TXT（纯文本）"),
-            ("pdf", "PDF（阅读版）"),
+            ("pdf", "PDF（旧版）"),
         ):
             ttk.Radiobutton(
                 format_row,
@@ -1191,6 +1209,38 @@ class ExporterApp:
             foreground="#2457A7",
         )
         self.chat_estimate_label.pack(side="left", anchor="w")
+
+        self.html_options_frame = ttk.Frame(self.chat_options_frame)
+        html_primary_row = ttk.Frame(self.html_options_frame)
+        html_primary_row.pack(fill="x")
+        for text, variable in (
+            ("系统消息", self.html_system_messages_var),
+            ("本机图片和动态表情", self.html_media_var),
+            ("文件信息", self.html_file_metadata_var),
+            ("优先群成员名称", self.html_group_names_var),
+        ):
+            ttk.Checkbutton(
+                html_primary_row,
+                text=text,
+                variable=variable,
+            ).pack(side="left", padx=(0, 14))
+        html_optional_row = ttk.Frame(self.html_options_frame)
+        html_optional_row.pack(fill="x", pady=(3, 0))
+        for text, variable in (
+            ("包含本机文件实体", self.html_file_binaries_var),
+            ("包含本机视频", self.html_videos_var),
+            ("联网补全缺失图片/表情", self.html_network_var),
+        ):
+            ttk.Checkbutton(
+                html_optional_row,
+                text=text,
+                variable=variable,
+            ).pack(side="left", padx=(0, 14))
+        ttk.Label(
+            self.html_options_frame,
+            text="默认生成可断网阅读的文件夹；缺失资源会明确标注，不会留下远程链接。",
+            foreground="#6A7280",
+        ).pack(anchor="w", pady=(3, 0))
 
         self.package_options_frame = ttk.LabelFrame(
             export,
@@ -1352,9 +1402,16 @@ class ExporterApp:
         ):
             frame.grid_remove()
         self._chat_export_pane_height = self._measure_chat_export_pane_height()
+        # Ttk's paned window otherwise follows the currently mapped child's
+        # requested height.  HTML has a taller option panel than JSON/TXT/PDF,
+        # which used to move the sash whenever users switched formats.  Keep
+        # the lower pane at the largest measured chat layout and let the
+        # existing spacer row absorb shorter task panels.
+        self.export_frame.configure(height=self._chat_export_pane_height)
+        self.export_frame.grid_propagate(False)
 
     def _measure_chat_export_pane_height(self) -> int:
-        """Measure the default chat-text panel once using the active DPI/fonts."""
+        """Measure the largest ordinary chat panel using the active DPI/fonts."""
         chat_frames = (
             self.task_frame,
             self.date_frame,
@@ -1363,10 +1420,12 @@ class ExporterApp:
             self.confirm_frame,
         )
         self.pdf_mode_frame.pack_forget()
+        self.html_options_frame.pack(fill="x", pady=(5, 0))
         for frame in chat_frames:
             frame.grid()
         self.root.update_idletasks()
         height = self.export_frame.winfo_reqheight()
+        self.html_options_frame.pack_forget()
         for frame in chat_frames:
             frame.grid_remove()
         return max(1, height)
@@ -1513,17 +1572,26 @@ class ExporterApp:
         if task == "chat":
             self.chat_options_frame.grid()
             if self.chat_format_var.get() == "pdf":
+                self.html_options_frame.pack_forget()
                 if not self.pdf_mode_frame.winfo_manager():
                     self.pdf_mode_frame.pack(
                         side="left",
                         padx=(0, 18),
                         before=self.chat_estimate_label,
                     )
+            elif self.chat_format_var.get() == "html":
+                if self.pdf_images_var.get():
+                    self.pdf_images_var.set(False)
+                    return
+                self.pdf_mode_frame.pack_forget()
+                if not self.html_options_frame.winfo_manager():
+                    self.html_options_frame.pack(fill="x", pady=(5, 0))
             else:
                 if self.pdf_images_var.get():
                     self.pdf_images_var.set(False)
                     return
                 self.pdf_mode_frame.pack_forget()
+                self.html_options_frame.pack_forget()
         elif task == "jsonl_package":
             self.package_options_frame.grid()
             if self.package_include_videos_var.get():
@@ -1547,7 +1615,7 @@ class ExporterApp:
         valid, reason = self._flow_options_valid(task)
         self.confirmation_var.set(reason or self._confirmation_summary(task, conversations))
         label = {
-            "chat": "导出聊天文字",
+            "chat": "导出聊天记录",
             "jsonl_package": "生成 AI 完整资料包",
             "chat_files": "批量导出聊天文件",
             "moments": "导出朋友圈归档",
@@ -1590,12 +1658,24 @@ class ExporterApp:
         target = conversations[0].display_name if len(conversations) == 1 else f"{len(conversations)} 个会话"
         date_text = self.range_var.get()
         if task == "chat":
-            format_name = {"json": "JSON 纯文字", "txt": "TXT 纯文本", "pdf": "PDF"}.get(
+            format_name = {
+                "html": "HTML 离线图文聊天记录",
+                "json": "JSON 纯文字",
+                "txt": "TXT 纯文本",
+                "pdf": "PDF",
+            }.get(
                 self.chat_format_var.get(),
                 "聊天文字",
             )
             if self.chat_format_var.get() == "pdf":
                 format_name += " 完整版" if self.pdf_images_var.get() else " 快速版"
+            if self.chat_format_var.get() == "html":
+                media = "包含本机图片和表情" if self.html_media_var.get() else "仅保留媒体占位"
+                network = "允许联网补全" if self.html_network_var.get() else "仅使用本机资源"
+                return (
+                    f"将 {target} 在 {date_text} 内的记录导出为 {format_name}；"
+                    f"{media}，{network}，可断网浏览。"
+                )
             return f"将 {target} 在 {date_text} 内的记录导出为 {format_name}；一次只生成这一种格式。"
         if task == "jsonl_package":
             video = (
@@ -1859,7 +1939,7 @@ class ExporterApp:
 
         task = self.task_var.get()
         if task not in {"chat", "jsonl_package"}:
-            self.estimate_var.set("选择聊天文字或 AI 完整资料包后自动估算")
+            self.estimate_var.set("选择聊天记录或 AI 完整资料包后自动估算")
             return
         conversations = self._selected_conversations()
         if not conversations:
@@ -1958,10 +2038,15 @@ class ExporterApp:
             ),
             include_jsonl=is_package,
             include_json=task == "chat" and chat_format == "json",
+            include_html=task == "chat" and chat_format == "html",
         )
         media_note = (
             " · 媒体复制时间取决于本机缓存和视频大小"
             if is_package
+            else " · HTML 会整理本机头像、图片和表情"
+            if chat_format == "html" and self.html_media_var.get()
+            else " · HTML 仅保留媒体占位"
+            if chat_format == "html"
             else " · 完整图片受本机缓存/网络影响"
             if chat_format == "pdf" and self.pdf_images_var.get()
             else " · 快速 PDF"
@@ -2098,8 +2183,8 @@ class ExporterApp:
         if not self._calibrate_selected(conversations):
             return
         selected_format = self.chat_format_var.get()
-        if selected_format not in {"json", "txt", "pdf"}:
-            messagebox.showwarning("未选择格式", "请选择 JSON、TXT 或 PDF。")
+        if selected_format not in {"html", "json", "txt", "pdf"}:
+            messagebox.showwarning("未选择格式", "请选择 HTML、JSON、TXT 或 PDF。")
             return
         request = ExportRequest(
             conversations=conversations,
@@ -2108,6 +2193,17 @@ class ExporterApp:
             include_jsonl=False,
             include_txt=selected_format == "txt",
             include_pdf=selected_format == "pdf",
+            include_html=selected_format == "html",
+            html_options=HtmlExportOptions(
+                include_system_messages=self.html_system_messages_var.get(),
+                include_images=self.html_media_var.get(),
+                include_stickers=self.html_media_var.get(),
+                include_file_metadata=self.html_file_metadata_var.get(),
+                include_file_binaries=self.html_file_binaries_var.get(),
+                include_videos=self.html_videos_var.get(),
+                prefer_group_member_names=self.html_group_names_var.get(),
+                allow_network_completion=self.html_network_var.get(),
+            ),
             include_pdf_images=(
                 selected_format == "pdf" and self.pdf_images_var.get()
             ),
@@ -2512,6 +2608,7 @@ class ExporterApp:
                             f"保存到：\n{self.output_var.get()}"
                             + ("\n\n" + "\n".join(result.warnings) if result.warnings else ""),
                         )
+                        self._open_single_html_result(result)
                 elif kind == "export:cancelled":
                     self._export_started_at = None
                     self._latest_export_status = ""
@@ -2553,6 +2650,28 @@ class ExporterApp:
             self._on_close(for_update=True)
             return
         self.root.after(100, self._poll_events)
+
+    def _open_single_html_result(self, result: ExportResult) -> None:
+        """Open a lone HTML entrypoint in the OS browser after successful export."""
+
+        if len(result.files) != 1:
+            return
+        target = Path(result.files[0])
+        if target.suffix.casefold() not in {".html", ".htm"}:
+            return
+        if not target.is_file():
+            messagebox.showwarning(
+                "HTML 已导出但无法打开",
+                f"入口文件当前不存在：\n{target}\n\n可从“导出历史”打开所在文件夹。",
+            )
+            return
+        try:
+            os.startfile(str(target))  # type: ignore[attr-defined]
+        except (AttributeError, OSError) as error:
+            messagebox.showwarning(
+                "HTML 已导出但无法自动打开",
+                f"系统浏览器启动失败：{error}\n\n文件仍已安全保存：\n{target}",
+            )
 
     def _focus_window(self) -> None:
         self._tray_hidden = False

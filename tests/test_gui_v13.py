@@ -124,8 +124,8 @@ def test_startup_automatically_attempts_connection_without_locking_an_account(ap
     assert app._auto_connect_calls[0]["allow_restart"] is False
 
 
-def test_json_text_is_default_and_jsonl_is_a_separate_advanced_task(app):
-    assert app.chat_format_var.get() == "json"
+def test_html_is_default_and_jsonl_is_a_separate_advanced_task(app):
+    assert app.chat_format_var.get() == "html"
     assert app.task_var.get() == ""
     texts = []
     stack = [app.export_frame]
@@ -136,7 +136,7 @@ def test_json_text_is_default_and_jsonl_is_a_separate_advanced_task(app):
             texts.append(str(widget.cget("text")))
         except tk.TclError:
             pass
-    assert any("JSON（最快）" in text for text in texts)
+    assert any("HTML（图文阅读，推荐）" in text for text in texts)
     assert any(text == "AI 完整资料包" for text in texts)
 
 
@@ -191,6 +191,7 @@ def test_task_and_format_switches_keep_panes_and_primary_action_fixed(app, size)
     assert app.pdf_mode_frame.winfo_manager() == ""
 
     states = (
+        ("chat", "html", False),
         ("chat", "txt", False),
         ("chat", "pdf", False),
         ("chat", "pdf", True),
@@ -310,7 +311,7 @@ def test_usage_guide_is_one_top_level_secondary_document(app):
         assert dialog is not None
         assert dialog.title() == "使用说明"
         assert dialog.section_list.size() == 6
-        assert "聊天文字" in dialog.article.get("1.0", "end")
+        assert "聊天记录" in dialog.article.get("1.0", "end")
         dialog.section_list.selection_clear(0, "end")
         dialog.section_list.selection_set(3)
         dialog._section_changed()
@@ -342,7 +343,8 @@ def test_ordinary_chat_dispatches_exactly_one_format_and_hides_pdf_flag(
         captured[-1].include_txt,
         captured[-1].include_pdf,
         captured[-1].include_pdf_images,
-    ) == (False, False, False, True, True)
+        captured[-1].include_html,
+    ) == (False, False, False, True, True, False)
 
     app.chat_format_var.set("json")
     app._export_clicked()
@@ -352,7 +354,23 @@ def test_ordinary_chat_dispatches_exactly_one_format_and_hides_pdf_flag(
         captured[-1].include_txt,
         captured[-1].include_pdf,
         captured[-1].include_pdf_images,
-    ) == (True, False, False, False, False)
+        captured[-1].include_html,
+    ) == (True, False, False, False, False, False)
+
+    app.chat_format_var.set("html")
+    app._export_clicked()
+    request = captured[-1]
+    assert (
+        request.include_json,
+        request.include_jsonl,
+        request.include_txt,
+        request.include_pdf,
+        request.include_html,
+    ) == (False, False, False, False, True)
+    assert request.html_options.include_images is True
+    assert request.html_options.include_stickers is True
+    assert request.html_options.include_file_binaries is False
+    assert request.html_options.allow_network_completion is False
 
 
 def test_advanced_package_dispatch_uses_confirmed_safe_defaults(app, monkeypatch):
@@ -754,6 +772,59 @@ def test_export_continues_in_tray_and_completion_uses_notification(app, monkeypa
     assert app._closing is False
     assert app._active_export_generation is None
     assert any(title == "导出完成" for title, _message, _error in tray.notifications)
+
+
+def test_visible_single_html_export_opens_in_system_browser(app, monkeypatch, tmp_path):
+    html_path = tmp_path / "好友_聊天记录_HTML" / "index.html"
+    html_path.parent.mkdir()
+    html_path.write_text("<!doctype html>", encoding="utf-8")
+    opened = []
+    generation = 61
+    app.service = fake_service(tmp_path)
+    app.account = app.service.account
+    app._active_export_generation = generation
+    app._worker_active = True
+    app._active_worker_name = "export"
+    monkeypatch.setattr(gui.messagebox, "showinfo", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(gui.os, "startfile", lambda path: opened.append(path))
+
+    app.events.put(
+        (
+            "export:ok",
+            (
+                generation,
+                ExportResult(files=[html_path], duration_seconds=0.2),
+            ),
+        )
+    )
+    app._poll_events()
+
+    assert opened == [str(html_path)]
+
+
+def test_html_browser_failure_warns_without_changing_export_success(
+    app,
+    monkeypatch,
+    tmp_path,
+):
+    html_path = tmp_path / "index.html"
+    html_path.write_text("<!doctype html>", encoding="utf-8")
+    warnings = []
+    monkeypatch.setattr(
+        gui.os,
+        "startfile",
+        lambda _path: (_ for _ in ()).throw(OSError("没有默认浏览器")),
+    )
+    monkeypatch.setattr(
+        gui.messagebox,
+        "showwarning",
+        lambda title, message, **_kwargs: warnings.append((title, message)),
+    )
+
+    app._open_single_html_result(ExportResult(files=[html_path]))
+
+    assert warnings
+    assert "仍已安全保存" in warnings[0][1]
 
 
 def test_export_failure_in_tray_uses_error_notification(app, monkeypatch):

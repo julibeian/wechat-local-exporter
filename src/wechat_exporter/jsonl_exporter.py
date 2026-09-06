@@ -8,6 +8,7 @@ from .content import (
     app_message_semantic_type,
     extract_message_details,
 )
+from .faces import normalize_wechat_faces
 from .models import AttachmentReference, Conversation, Message
 
 
@@ -48,11 +49,12 @@ def message_to_json_record(
     conversation: Conversation,
 ) -> dict[str, object]:
     transcript: dict[str, str] | None = None
-    text: str | None = message.content or None
+    display_text = normalize_wechat_faces(message.content)
+    text: str | None = display_text.text or None
     if message.message_type == 34:
         text = None
         if message.content.startswith(WECHAT_VOICE_TEXT_PREFIX):
-            transcript_text = message.content[len(WECHAT_VOICE_TEXT_PREFIX) :].strip()
+            transcript_text = display_text.text[len(WECHAT_VOICE_TEXT_PREFIX) :].strip()
             if transcript_text:
                 transcript = {"text": transcript_text, "source": "wechat"}
 
@@ -74,6 +76,7 @@ def message_to_json_record(
         "message_type": message.message_type,
         "type": understandable_message_type(message),
         "text": text,
+        "raw_text": display_text.raw_text,
         "transcript": transcript,
         "details": extract_message_details(message.message_type, message.raw_content),
         "attachment": attachment_to_json(message.attachment),

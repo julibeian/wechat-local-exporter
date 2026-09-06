@@ -13,6 +13,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 
+from .faces import normalize_wechat_faces
 from .models import Conversation, Message, Moment, MomentMedia, PdfImage
 
 
@@ -48,7 +49,7 @@ class TxtTranscriptWriter:
 
     def write(self, message: Message) -> None:
         timestamp = message.datetime.strftime("%Y-%m-%d %H:%M:%S")
-        text = message.content or "[空消息]"
+        text = normalize_wechat_faces(message.content).text or "[空消息]"
         lines = text.splitlines() or [""]
         self._stream.write(f"[{timestamp}] {message.sender_name}: {lines[0]}\n")
         for line in lines[1:]:

@@ -155,6 +155,25 @@ class Message:
 
 
 @dataclass(frozen=True, slots=True)
+class HtmlExportOptions:
+    """Human-readable offline chat archive settings.
+
+    The default deliberately produces a useful illustrated archive from local
+    data without silently downloading missing WeChat resources.  Large binary
+    attachments and videos remain explicit opt-ins.
+    """
+
+    include_system_messages: bool = True
+    include_images: bool = True
+    include_stickers: bool = True
+    include_file_metadata: bool = True
+    include_file_binaries: bool = False
+    include_videos: bool = False
+    prefer_group_member_names: bool = True
+    allow_network_completion: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class ExportRequest:
     conversations: tuple[Conversation, ...]
     output_dir: Path
@@ -163,6 +182,8 @@ class ExportRequest:
     include_pdf_images: bool = False
     include_jsonl: bool = False
     include_json: bool = False
+    include_html: bool = False
+    html_options: HtmlExportOptions = field(default_factory=HtmlExportOptions)
     include_wechat_voice_text: bool = True
     start_timestamp: int = 0
     end_timestamp: int = 0
