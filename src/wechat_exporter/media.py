@@ -65,9 +65,9 @@ class MediaStats:
     missing: int = 0
     issues: set[str] = field(default_factory=set)
 
-    def summary(self) -> str:
+    def summary(self, *, label: str = "PDF 图片") -> str:
         return (
-            f"PDF 图片：已嵌入 {self.embedded}/{self.requested} 张"
+            f"{label}：已嵌入 {self.embedded}/{self.requested} 张"
             f"（本机原图 {self.local_originals}、缩略图 {self.thumbnails}、"
             f"表情图片 {self.emoticons}），缺失 {self.missing} 张。"
         )
@@ -169,6 +169,7 @@ class MediaResolver:
         download: Callable[[str], bytes] | None = None,
         ffmpeg_executable: str | None = None,
         allow_network: bool = True,
+        cache_message_results: bool = True,
     ):
         self.account = account
         self.wxid = wxid
@@ -177,6 +178,12 @@ class MediaResolver:
         self._image_keys_checked = image_keys is not None
         self._download_override = download
         self.allow_network = allow_network
+        # PDF and JSONL exports may resolve the same image concurrently, so
+        # their historical behaviour keeps resolved bytes in memory.  The HTML
+        # writer is sequential and immediately persists each result to disk;
+        # it disables this cache to keep rich, long-running exports from
+        # retaining every image payload until the whole export finishes.
+        self.cache_message_results = cache_message_results
         self._ffmpeg_executable = ffmpeg_executable
         self._ffmpeg_checked = ffmpeg_executable is not None
         self._cache: dict[tuple[str, ...], PdfImage | None] = {}
@@ -207,6 +214,14 @@ class MediaResolver:
             reference.encrypted_url,
             reference.thumbnail_url,
         )
+        if not self.cache_message_results:
+            result = (
+                self._resolve_local_image(message, reference)
+                if reference.kind == "image"
+                else self._resolve_emoticon(reference)
+            )
+            return self._record_message_result(reference, result)
+
         with self._cache_condition:
             while cache_key in self._inflight and cache_key not in self._cache:
                 self._cache_condition.wait()
@@ -235,6 +250,13 @@ class MediaResolver:
                 self._inflight.discard(cache_key)
                 self._cache_condition.notify_all()
 
+        return self._record_message_result(reference, result)
+
+    def _record_message_result(
+        self,
+        reference: MediaReference,
+        result: PdfImage | None,
+    ) -> PdfImage | None:
         with self._stats_lock:
             if result is None:
                 self.stats.missing += 1

@@ -496,6 +496,7 @@ class ExporterService:
         completed_messages = 0
         progress_step = max(1, total_messages // 200)
         last_progress_at = started_at
+        last_progress_count = 0
         voice_count = 0
         official_voice_count = 0
         missing_voice_count = 0
@@ -505,6 +506,7 @@ class ExporterService:
                 self.account,
                 self.archive.self_wxid,
                 allow_network=options.allow_network_completion,
+                cache_message_results=False,
             )
             if options.include_images or options.include_stickers
             else None
@@ -569,13 +571,13 @@ class ExporterService:
                 conversation_processed = 0
 
                 def html_progress(processed: int, _total: int | None) -> None:
-                    nonlocal conversation_processed, last_progress_at
+                    nonlocal conversation_processed, last_progress_at, last_progress_count
                     conversation_processed = processed
                     overall_count = completed_messages + processed
                     now = time.perf_counter()
                     if not progress or not (
                         overall_count >= total_messages
-                        or overall_count % progress_step == 0
+                        or overall_count - last_progress_count >= progress_step
                         or now - last_progress_at >= 0.2
                     ):
                         return
@@ -603,6 +605,7 @@ class ExporterService:
                         min(0.98, raw_fraction * 0.98),
                     )
                     last_progress_at = now
+                    last_progress_count = overall_count
 
                 def messages_for_html() -> Iterator[Message]:
                     nonlocal voice_count, official_voice_count, missing_voice_count
@@ -612,7 +615,6 @@ class ExporterService:
                         end_timestamp=request.end_timestamp,
                     )
                     for message in messages:
-                        _raise_if_cancelled(cancelled)
                         if message.message_type == 34:
                             voice_count += 1
                             has_official_text = message.content.startswith(
@@ -688,7 +690,9 @@ class ExporterService:
                 f"微信尚未生成 {missing_voice_count} 条。"
             )
         if image_resolver and image_resolver.stats.requested:
-            result.warnings.append(image_resolver.stats.summary())
+            result.warnings.append(
+                image_resolver.stats.summary(label="HTML 图片/表情")
+            )
             result.warnings.extend(sorted(image_resolver.stats.issues))
         if cancelled is not None and cancelled.is_set():
             for directory in reversed(published_directories):

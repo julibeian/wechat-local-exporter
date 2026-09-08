@@ -251,9 +251,19 @@ class WeChatArchive:
             )
             sequence += 1
 
+        # Database rows are ordered by their raw create_time.  Normalising a
+        # millisecond value to seconds keeps timestamps monotonic, but sort_seq
+        # may move backwards inside the same second.  Keep fingerprints for the
+        # complete second and release them only when the timestamp advances.
+        # This remains bounded for normal archives without missing duplicates
+        # whose (timestamp, sort_seq) key briefly repeats later in that second.
+        seen_timestamp: int | None = None
         seen: set[tuple[int, int, int, str, str, str]] = set()
         while heap:
             _, _, _, message, iterator = heapq.heappop(heap)
+            if message.timestamp != seen_timestamp:
+                seen.clear()
+                seen_timestamp = message.timestamp
             fingerprint = (
                 message.timestamp,
                 message.sort_seq,

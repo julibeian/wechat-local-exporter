@@ -313,6 +313,12 @@ def test_usage_guide_is_one_top_level_secondary_document(app):
         assert dialog.section_list.size() == 6
         assert "聊天记录" in dialog.article.get("1.0", "end")
         dialog.section_list.selection_clear(0, "end")
+        dialog.section_list.selection_set(1)
+        dialog._section_changed()
+        format_guide = dialog.article.get("1.0", "end")
+        assert "[爱心] 显示为 ❤️" in format_guide
+        assert "PDF 完整版：旧版兼容功能" in format_guide
+        dialog.section_list.selection_clear(0, "end")
         dialog.section_list.selection_set(3)
         dialog._section_changed()
         assert "不会自行运行语音识别" in dialog.article.get("1.0", "end")
@@ -442,10 +448,10 @@ def test_update_banner_and_offline_history_stay_inside_ui(app, monkeypatch):
     controller = app.updates
     controller.manager.result = CheckResult(
         "available",
-        "2.0.0",
+        "1.7.0",
         (
             Release(
-                "2.0.0",
+                "1.7.0",
                 "2026-09-01",
                 "新增功能\n<!-- wechat-exporter-target-sha256:" + "a" * 64 + " -->",
             ),
@@ -455,17 +461,17 @@ def test_update_banner_and_offline_history_stay_inside_ui(app, monkeypatch):
     assert controller.banner.winfo_manager() == "pack"
     controller.dismiss()
     assert controller.banner.winfo_manager() == ""
-    assert "2.0.0" in controller.status.get()
+    assert "1.7.0" in controller.status.get()
     controller.show()
     assert "新增功能" in controller.notes.get("1.0", "end")
     assert "target-sha256" not in controller.notes.get("1.0", "end")
-    assert controller.dialog_current.get() == "v1.5.0"
-    assert controller.dialog_latest.get() == "v2.0.0"
-    assert controller.release_heading.get() == "v2.0.0"
+    assert controller.dialog_current.get() == "v1.6.0"
+    assert controller.dialog_latest.get() == "v1.7.0"
+    assert controller.release_heading.get() == "v1.7.0"
     assert controller.release_list.size() == 1
     controller.manager.result = CheckResult("unavailable")
     controller.refresh()
-    assert controller.release_heading.get() == "v1.5.0"
+    assert controller.release_heading.get() == "v1.6.0"
     assert controller.release_list.size() >= 2
     assert "JSONL" in controller.notes.get("1.0", "end")
 
@@ -492,10 +498,10 @@ def test_version_dialog_uses_readable_two_pane_layout_at_minimum_size(app):
     app.root.update()
     controller.manager.result = CheckResult(
         "available",
-        "2.0.0",
+        "1.7.0",
         (
-            Release("2.0.0", "2026-09-03", "第一项。\n\n第二项。"),
-            Release("1.5.0", "2026-09-02", "旧版说明。"),
+            Release("1.7.0", "2026-09-03", "第一项。\n\n第二项。"),
+            Release("1.6.0", "2026-09-02", "旧版说明。"),
         ),
     )
     controller.show()
@@ -854,7 +860,7 @@ def test_controls_fit_with_update_banner_at_supported_window_sizes(app, size):
     app.root.attributes("-alpha", 0)
     app.root.geometry(size)
     app.root.deiconify()
-    app.updates.manager.result = CheckResult("available", "2.0.0")
+    app.updates.manager.result = CheckResult("available", "1.7.0")
     app.updates.refresh()
     app.root.update()
     app._set_initial_sash()

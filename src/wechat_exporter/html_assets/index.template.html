@@ -83,6 +83,7 @@
           <p class="toolbar-status" id="view-status" role="status" aria-live="polite">正在读取归档信息…</p>
         </div>
         <div class="toolbar-actions">
+          <button class="button" id="print-button" type="button" disabled>打印 / 另存 PDF</button>
           <button class="button" id="previous-chunk" type="button">上一分块</button>
           <button class="button" id="next-chunk" type="button">下一分块</button>
         </div>
@@ -107,12 +108,43 @@
     </main>
   </div>
 
+  <section class="print-document" id="print-document" aria-hidden="true">
+    <header class="print-header">
+      <p class="print-eyebrow">微信聊天本地归档</p>
+      <h1 id="print-title">{{CONVERSATION_NAME}}</h1>
+      <dl class="print-summary">
+        <div><dt>打印范围</dt><dd id="print-range">尚未准备</dd></div>
+        <div><dt>消息数量</dt><dd id="print-count">—</dd></div>
+        <div><dt>归档生成</dt><dd id="print-generated">—</dd></div>
+      </dl>
+      <p class="print-scope-note" id="print-scope-note">本页只包含打印时所选分块，不代表归档中的其他分块。</p>
+    </header>
+    <div class="print-message-list" id="print-message-list"></div>
+  </section>
+
   <dialog class="media-dialog" id="media-dialog">
     <form method="dialog" class="dialog-bar">
       <p id="dialog-caption">查看图片</p>
       <button class="button" type="submit">关闭</button>
     </form>
     <img id="dialog-image" alt="">
+  </dialog>
+
+  <dialog class="print-dialog" id="print-dialog" aria-labelledby="print-dialog-title">
+    <div class="print-dialog-content">
+      <p class="eyebrow">打印范围确认</p>
+      <h2 id="print-dialog-title">打印当前分块 / 另存为 PDF</h2>
+      <p id="print-description">请先等待当前消息分块加载完成。</p>
+      <div class="print-dialog-note">
+        <strong>范围说明</strong>
+        <p>打印前会补齐当前分块中未显示的消息，但不会加载或打印其他分块。超大归档因此不会一次性占满浏览器内存。</p>
+      </div>
+      <p class="print-browser-help">随后在浏览器打印面板中选择“另存为 PDF”，即可得到当前分块的 PDF。</p>
+      <div class="dialog-actions">
+        <button class="button" id="print-cancel" type="button">取消</button>
+        <button class="button button-primary" id="print-confirm" type="button">准备并打开打印面板</button>
+      </div>
+    </div>
   </dialog>
 
   <noscript>此离线归档需要启用 JavaScript，才能分块加载、搜索和筛选聊天记录。</noscript>

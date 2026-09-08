@@ -115,6 +115,7 @@ class Transport:
         ("1.4.0", "latest"),
         ("1.5.0", "latest"),
         ("1.2.0", "latest"),
+        ("1.6.0", "latest"),
         ("1.10.0", "available"),
         ("2.0.0", "available"),
     ],
@@ -181,7 +182,7 @@ def test_non_json_api(tmp_path):
 
 def test_banner_dismissal_persists_until_a_different_release(tmp_path):
     path = tmp_path / "s.json"
-    entry, _ = release_json("1.6.0")
+    entry, _ = release_json("1.7.0")
     source = GitHubSource(opener=Transport([entry]))
     manager = UpdateManager(LocalConfig(path), (source,), now=lambda: 100_000)
     manager.check()
@@ -191,7 +192,7 @@ def test_banner_dismissal_persists_until_a_different_release(tmp_path):
     restarted = UpdateManager(LocalConfig(path), (source,), now=lambda: 100_001)
     assert restarted.check().status == "available"
     assert not restarted.should_show_banner()
-    entry, _ = release_json("1.7.0")
+    entry, _ = release_json("1.8.0")
     restarted.sources = (GitHubSource(opener=Transport([entry])),)
     restarted.check(automatic=False)
     assert restarted.should_show_banner()

@@ -45,6 +45,7 @@
       windowStart: 0,
       searchToken: 0,
       highlightedId: "",
+      printChunkIndex: -1,
     };
 
     fillSummary(elements);
@@ -85,6 +86,17 @@
       chunkSelect: byId("chunk-select"),
       earlierWindow: byId("earlier-window"),
       laterWindow: byId("later-window"),
+      printButton: byId("print-button"),
+      printDialog: byId("print-dialog"),
+      printDescription: byId("print-description"),
+      printCancel: byId("print-cancel"),
+      printConfirm: byId("print-confirm"),
+      printDocument: byId("print-document"),
+      printRange: byId("print-range"),
+      printCount: byId("print-count"),
+      printGenerated: byId("print-generated"),
+      printScopeNote: byId("print-scope-note"),
+      printMessageList: byId("print-message-list"),
       themeButton: byId("theme-button"),
       dialog: byId("media-dialog"),
       dialogImage: byId("dialog-image"),
@@ -195,6 +207,18 @@
       renderWindow(state);
       scrollMessagesToTop();
     });
+    elements.printButton.addEventListener("click", function () {
+      updatePrintDescription(state);
+      if (typeof elements.printDialog.showModal === "function") {
+        elements.printDialog.showModal();
+      }
+    });
+    elements.printCancel.addEventListener("click", function () {
+      elements.printDialog.close();
+    });
+    elements.printConfirm.addEventListener("click", function () {
+      printCurrentChunk(state);
+    });
     elements.sidebarToggle.addEventListener("click", function () {
       const open = elements.sidebar.classList.toggle("open");
       elements.sidebarToggle.setAttribute("aria-expanded", String(open));
@@ -211,6 +235,11 @@
       const next = current === "auto" ? "light" : current === "light" ? "dark" : "auto";
       cycleTheme(elements.themeButton, next, false);
     });
+    window.addEventListener("beforeprint", function () {
+      // Ctrl+P must never silently print only the 160-message screen window.
+      // This synchronous preparation uses the already loaded current chunk.
+      preparePrintDocument(state);
+    });
   }
 
   async function loadAndShowChunk(state, index, options) {
@@ -219,11 +248,13 @@
     }
     const chunk = manifest.chunks[index];
     state.elements.viewStatus.textContent = "正在加载 " + chunkLabel(chunk, index) + "…";
+    state.elements.printButton.disabled = true;
     setNavigationDisabled(state.elements, true);
     try {
       const records = await loadChunkData(chunk);
       state.currentChunkIndex = index;
       state.currentRecords = records;
+      clearPreparedPrint(state);
       state.highlightedId = options && options.highlightedId ? options.highlightedId : "";
       state.elements.chunkSelect.value = String(index);
       renderWindow(state, options || { anchor: "start" });
@@ -232,6 +263,7 @@
       renderEmpty(state, "消息分块无法读取。请确认归档目录没有缺少文件。", error);
     } finally {
       setNavigationDisabled(state.elements, false);
+      state.elements.printButton.disabled = state.currentChunkIndex < 0;
       updateNavigation(state);
     }
   }
@@ -346,7 +378,8 @@
     return divider;
   }
 
-  function createMessage(record, state) {
+  function createMessage(record, state, options) {
+    const forPrint = Boolean(options && options.forPrint);
     if (record.type === "system") {
       const system = document.createElement("article");
       system.className = "system-message";
@@ -359,20 +392,24 @@
 
     const row = document.createElement("article");
     row.className = "message-row" + (record.outgoing ? " outgoing" : " incoming");
-    row.tabIndex = 0;
+    if (!forPrint) {
+      row.tabIndex = 0;
+    }
     row.dataset.messageId = record.id;
     row.setAttribute(
       "aria-label",
       (record.sender_name || "未知成员") + "，" + readableDateTime(record.datetime) + "，" + messageAccessibleText(record)
     );
-    row.addEventListener("click", function (event) {
-      if (event.target.closest("button, a, video")) {
-        return;
-      }
-      row.classList.toggle("show-time");
-    });
+    if (!forPrint) {
+      row.addEventListener("click", function (event) {
+        if (event.target.closest("button, a, video")) {
+          return;
+        }
+        row.classList.toggle("show-time");
+      });
+    }
 
-    row.appendChild(createAvatar(state.participantMap.get(record.sender), record));
+    row.appendChild(createAvatar(state.participantMap.get(record.sender), record, options));
     const stack = document.createElement("div");
     stack.className = "message-stack";
     const sender = document.createElement("p");
@@ -389,7 +426,7 @@
       bubble.appendChild(text);
     }
     if (Array.isArray(record.media) && record.media.length) {
-      bubble.appendChild(createMediaList(record.media, state, record));
+      bubble.appendChild(createMediaList(record.media, state, record, options));
     }
     if (record.attachment) {
       bubble.appendChild(createAttachment(record.attachment));
@@ -411,7 +448,7 @@
     return row;
   }
 
-  function createAvatar(participant, record) {
+  function createAvatar(participant, record, options) {
     const avatar = document.createElement("div");
     avatar.className = "avatar";
     const avatarInfo = participant && participant.avatar ? participant.avatar : null;
@@ -419,7 +456,7 @@
       const image = document.createElement("img");
       image.src = avatarInfo.path;
       image.alt = "";
-      image.loading = "lazy";
+      image.loading = options && options.forPrint ? "eager" : "lazy";
       image.decoding = "async";
       image.addEventListener("error", function () {
         avatar.replaceChildren(createAvatarFallback(participant, record));
@@ -442,7 +479,8 @@
     return fallback;
   }
 
-  function createMediaList(mediaItems, state, record) {
+  function createMediaList(mediaItems, state, record, options) {
+    const forPrint = Boolean(options && options.forPrint);
     const list = document.createElement("div");
     list.className = "media-list";
     mediaItems.forEach(function (item) {
@@ -454,6 +492,10 @@
         return;
       }
       if (item.kind === "video") {
+        if (forPrint) {
+          list.appendChild(mediaFailure("视频未写入纸面或 PDF；请在原 HTML 归档中播放。"));
+          return;
+        }
         const video = document.createElement("video");
         video.className = "message-video";
         video.controls = true;
@@ -466,23 +508,27 @@
         list.appendChild(video);
         return;
       }
-      const button = document.createElement("button");
-      button.type = "button";
+      const button = document.createElement(forPrint ? "div" : "button");
+      if (!forPrint) {
+        button.type = "button";
+        button.setAttribute("aria-label", "查看" + mediaKindLabel(item.kind));
+      }
       button.className = "media-open" + (item.kind === "sticker" ? " media-sticker" : "");
-      button.setAttribute("aria-label", "查看" + mediaKindLabel(item.kind));
       const image = document.createElement("img");
       const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       image.src = reduceMotion && item.animated && item.fallback_path ? item.fallback_path : item.path;
       image.alt = item.kind === "sticker" ? "动态表情" : "聊天图片";
-      image.loading = "lazy";
+      image.loading = forPrint ? "eager" : "lazy";
       image.decoding = "async";
       image.addEventListener("error", function () {
         button.replaceWith(mediaFailure(mediaKindLabel(item.kind) + "文件无法显示"));
       });
       button.appendChild(image);
-      button.addEventListener("click", function () {
-        openMediaDialog(state.elements, item.path, image.alt, record);
-      });
+      if (!forPrint) {
+        button.addEventListener("click", function () {
+          openMediaDialog(state.elements, item.path, image.alt, record);
+        });
+      }
       list.appendChild(button);
     });
     return list;
@@ -513,6 +559,102 @@
       : attachment.reason || "仅保存文件信息，未包含原件";
     card.append(name, meta, status);
     return card;
+  }
+
+  function updatePrintDescription(state) {
+    const elements = state.elements;
+    if (state.currentChunkIndex < 0) {
+      elements.printDescription.textContent = "请先等待当前消息分块加载完成。";
+      elements.printConfirm.disabled = true;
+      return;
+    }
+    const count = state.currentRecords.length;
+    elements.printConfirm.disabled = false;
+    if (manifest.chunks.length === 1) {
+      elements.printDescription.textContent =
+        "本归档只有 1 个分块，将打印其中全部 " + formatNumber(count) + " 条消息，也就是本归档的全部记录。";
+      return;
+    }
+    elements.printDescription.textContent =
+      "当前是第 " + String(state.currentChunkIndex + 1) + " / " + String(manifest.chunks.length) +
+      " 个分块，将打印本分块全部 " + formatNumber(count) + " 条消息；不会打印其余分块。";
+  }
+
+  function clearPreparedPrint(state) {
+    state.printChunkIndex = -1;
+    state.elements.printMessageList.replaceChildren();
+    state.elements.printRange.textContent = "尚未准备";
+    state.elements.printCount.textContent = "—";
+  }
+
+  function preparePrintDocument(state) {
+    if (state.currentChunkIndex < 0 || !state.currentRecords.length) {
+      return false;
+    }
+    if (state.printChunkIndex === state.currentChunkIndex && state.elements.printMessageList.childNodes.length) {
+      return true;
+    }
+
+    const chunk = manifest.chunks[state.currentChunkIndex];
+    const fragment = document.createDocumentFragment();
+    let lastDate = "";
+    state.currentRecords.forEach(function (record) {
+      if (record.date !== lastDate) {
+        fragment.appendChild(createDateDivider(record.date));
+        lastDate = record.date;
+      }
+      fragment.appendChild(createMessage(record, state, { forPrint: true }));
+    });
+    state.elements.printMessageList.replaceChildren(fragment);
+    state.printChunkIndex = state.currentChunkIndex;
+    state.elements.printRange.textContent = chunkLabel(chunk, state.currentChunkIndex);
+    state.elements.printCount.textContent = formatNumber(state.currentRecords.length) + " 条";
+    state.elements.printGenerated.textContent = readableDateTime(manifest.generated_at);
+    state.elements.printScopeNote.textContent = manifest.chunks.length === 1
+      ? "本归档只有一个分块，因此本次打印包含归档中的全部记录。"
+      : "本次只打印第 " + String(state.currentChunkIndex + 1) + " / " + String(manifest.chunks.length) +
+        " 个分块，不包含归档中的其他分块。";
+    return true;
+  }
+
+  async function printCurrentChunk(state) {
+    const elements = state.elements;
+    if (!preparePrintDocument(state)) {
+      updatePrintDescription(state);
+      return;
+    }
+    elements.printConfirm.disabled = true;
+    elements.printConfirm.textContent = "正在准备图片…";
+    elements.viewStatus.textContent = "正在准备当前分块的打印版式…";
+    try {
+      await waitForPrintImages(elements.printMessageList, 3000);
+      elements.printDialog.close();
+      window.print();
+    } finally {
+      elements.printConfirm.disabled = false;
+      elements.printConfirm.textContent = "准备并打开打印面板";
+      const chunk = manifest.chunks[state.currentChunkIndex];
+      elements.viewStatus.textContent = chunkLabel(chunk, state.currentChunkIndex) + " · 打印范围为当前分块全部消息";
+    }
+  }
+
+  function waitForPrintImages(container, timeoutMs) {
+    const pending = Array.from(container.querySelectorAll("img")).filter(function (image) {
+      return !image.complete;
+    });
+    if (!pending.length) {
+      return Promise.resolve();
+    }
+    const settled = Promise.all(pending.map(function (image) {
+      return new Promise(function (resolve) {
+        image.addEventListener("load", resolve, { once: true });
+        image.addEventListener("error", resolve, { once: true });
+      });
+    }));
+    const timeout = new Promise(function (resolve) {
+      window.setTimeout(resolve, timeoutMs);
+    });
+    return Promise.race([settled, timeout]);
   }
 
   async function runArchiveSearch(state) {
