@@ -117,9 +117,9 @@ jobs:
                 if ($LASTEXITCODE -ne 0) { throw "Failed to remove extra release asset: $assetName" }
               }
             }
-            gh release edit $tag --title "微信聊天本地导出工具 v$version" --notes-file $notesFile --latest
+            gh release edit $tag --title "$tag" --notes-file $notesFile --latest
           } else {
-            gh release create $tag $installer --verify-tag --title "微信聊天本地导出工具 v$version" --notes-file $notesFile --latest
+            gh release create $tag $installer --verify-tag --title "$tag" --notes-file $notesFile --latest
           }
           if ($LASTEXITCODE -ne 0) { throw 'GitHub release publication failed' }
           $published = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$tag" | ConvertFrom-Json
