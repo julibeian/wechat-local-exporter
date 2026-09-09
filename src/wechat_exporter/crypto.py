@@ -71,6 +71,7 @@ def collect_required_databases(db_dir: Path) -> list[DatabaseTarget]:
         db_dir / "contact" / "contact.db",
         db_dir / "session" / "session.db",
         db_dir / "sns" / "sns.db",
+        db_dir / "head_image" / "head_image.db",
     ]
     message_dir = db_dir / "message"
     if message_dir.is_dir():

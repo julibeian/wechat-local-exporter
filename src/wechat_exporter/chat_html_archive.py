@@ -16,6 +16,8 @@ import time
 from typing import Any
 
 from .faces import normalize_wechat_faces
+from .content import extract_message_details
+from . import PROJECT_URL, __version__
 from .jsonl_exporter import understandable_message_type
 from .models import Conversation, HtmlExportOptions, Message
 
@@ -169,7 +171,10 @@ class ChatHtmlArchiveWriter:
             self._report_progress()
             return False
 
-        participant_id, participant_name = self._ensure_participant(message)
+        participant_id, participant_name = (
+            ("system", "系统") if _is_system_message(message)
+            else self._ensure_participant(message)
+        )
         record = self._message_record(message, participant_id, participant_name)
         self._chunk_records.append(record)
         self._message_count += 1
@@ -231,7 +236,8 @@ class ChatHtmlArchiveWriter:
             .replace(
                 "{{CONVERSATION_KIND}}",
                 "群聊记录" if self.conversation.is_group else "私聊记录",
-            ),
+            ).replace("{{PROJECT_URL}}", html.escape(PROJECT_URL, quote=True))
+            .replace("{{VERSION}}", html.escape(__version__)),
         )
         checksum_manifest = self.root / "manifest-sha256.txt"
         self._write_checksum_manifest(checksum_manifest)
@@ -271,6 +277,11 @@ class ChatHtmlArchiveWriter:
             target = self.assets_root / filename
             shutil.copyfile(source, target)
             self._remember_checksum(target, _file_sha256(target))
+        for source in sorted((_ASSET_ROOT / "icons").glob("*")):
+            target = self.assets_root / "icons" / source.name
+            target.parent.mkdir(exist_ok=True)
+            shutil.copyfile(source, target)
+            self._remember_checksum(target, _file_sha256(target))
 
     def _message_record(
         self,
@@ -304,6 +315,21 @@ class ChatHtmlArchiveWriter:
         }
         if raw_text is not None:
             record["raw_text"] = raw_text
+        details = extract_message_details(message.message_type, message.raw_content) or {}
+        if message_kind == "quote" and details.get("reply_text") is not None:
+            quoted_sender = str(details.get("quoted_sender", ""))
+            profile = _lookup_profile(self.profiles, quoted_sender,
+                                      self.conversation.username if self.conversation.is_group else "")
+            fallback = (self.conversation.display_name if quoted_sender == self.conversation.username
+                        else "未知成员" if quoted_sender.startswith("wxid_") else quoted_sender or "未知成员")
+            name = _profile_display_name(profile, fallback=fallback,
+                                         prefer_group_name=self.conversation.is_group)
+            record["text"] = normalize_wechat_faces(str(details.get("reply_text", ""))).text
+            record["quote"] = {"sender_name": name,
+                               "text": normalize_wechat_faces(str(details.get("quoted_text", ""))).text}
+        if message_kind == "transfer":
+            record["payment"] = {key: details[key] for key in ("amount", "memo", "status_text", "paysubtype")
+                                 if key in details}
         return record
 
     def _message_media(

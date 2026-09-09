@@ -16,7 +16,6 @@
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-inner">
         <header class="archive-heading">
-          <p class="eyebrow">微信聊天本地归档</p>
           <h1>{{CONVERSATION_NAME}}</h1>
           <p class="conversation-kind">{{CONVERSATION_KIND}}</p>
         </header>
@@ -26,7 +25,6 @@
           <div><dt>范围</dt><dd id="summary-range">—</dd></div>
           <div><dt>分块</dt><dd id="summary-chunks">—</dd></div>
           <div><dt>已加载分块</dt><dd id="summary-current-chunk">—</dd></div>
-          <div><dt>媒体状态</dt><dd id="summary-media">—</dd></div>
           <div><dt>导出时间</dt><dd id="summary-generated">—</dd></div>
         </dl>
 
@@ -34,33 +32,35 @@
           <fieldset>
             <legend>搜索</legend>
             <label class="visually-hidden" for="search-input">搜索消息</label>
-            <input id="search-input" name="query" type="search" autocomplete="off" placeholder="搜索消息、成员或文件名">
+            <input id="search-input" name="query" type="search" autocomplete="off" placeholder="搜索消息">
             <div class="button-row">
-              <button class="button button-primary" id="search-button" type="submit">搜索全部记录</button>
-              <button class="button" id="clear-button" type="button">清除</button>
+              <button class="button button-primary" id="search-button" type="submit" title="搜索全部记录">搜索</button>
+              <button class="button icon-button" id="search-previous" type="button" aria-label="上一个搜索结果" title="上一个结果" disabled>↑</button>
+              <button class="button icon-button" id="search-next" type="button" aria-label="下一个搜索结果" title="下一个结果" disabled>↓</button>
+              <button class="button icon-button" id="clear-button" type="button" aria-label="清除搜索与筛选" title="清除">×</button>
             </div>
           </fieldset>
 
           <fieldset>
             <legend>筛选</legend>
-            <label for="member-filter">成员</label>
-            <select id="member-filter" name="member">
+            <label class="visually-hidden" for="member-filter">成员</label>
+            <select id="member-filter" name="member" hidden>
               <option value="">全部成员</option>
             </select>
-            <label for="type-filter">消息类型</label>
-            <select id="type-filter" name="type">
+            <label class="visually-hidden" for="type-filter">消息类型</label>
+            <select id="type-filter" name="type" hidden>
               <option value="">全部类型</option>
             </select>
-            <div class="date-fields">
+            <details class="date-picker"><summary id="date-summary">全部日期</summary><div class="date-fields">
               <label for="date-from">开始日期</label>
               <input id="date-from" name="dateFrom" type="date">
               <label for="date-to">结束日期</label>
               <input id="date-to" name="dateTo" type="date">
-            </div>
+            </div></details>
           </fieldset>
         </form>
 
-        <section class="search-panel" aria-labelledby="search-results-title">
+        <section hidden class="search-panel" aria-labelledby="search-results-title">
           <div class="section-heading-row">
             <h2 id="search-results-title">搜索结果</h2>
             <span id="search-count">0</span>
@@ -70,41 +70,44 @@
         </section>
 
         <footer class="archive-footer">
-          <button class="text-button" id="theme-button" type="button">主题：自动</button>
-          <p>完全离线查看 · 未加载远程内容</p>
+          <div class="footer-tools">
+            <a class="project-link" href="{{PROJECT_URL}}" title="julibeian/wechat-local-exporter" target="_blank" rel="noopener noreferrer"><img src="assets/icons/github.svg" alt=""><span>wechat-local-exporter</span></a>
+            <button class="text-button" id="settings-button" type="button" aria-label="归档设置" aria-controls="archive-settings" aria-expanded="false" title="归档设置"><img class="ui-icon" src="assets/icons/settings.svg" alt=""></button>
+            <button class="text-button" id="theme-button" type="button">主题：自动</button>
+          </div>
+          <p class="exporter-version">exporter v{{VERSION}}</p>
+          <section id="archive-settings" hidden aria-label="归档设置">
+            <button class="button" id="print-button" type="button" disabled>打印 / 另存 PDF</button>
+            <nav class="chunk-navigation" aria-label="分块导航">
+              <label for="chunk-select">跳转分块</label>
+              <select id="chunk-select"></select>
+              <div class="button-row">
+                <button class="button" id="previous-chunk" type="button">上一分块</button>
+                <button class="button" id="next-chunk" type="button">下一分块</button>
+              </div>
+            </nav>
+          </section>
+          <div class="reading-navigation" hidden>
+            <button class="text-button" id="first-chunk" type="button">↑ 最早消息</button>
+            <button class="text-button" id="latest-chunk" type="button">↓ 最新消息</button>
+          </div>
+          <p id="view-status" class="visually-hidden" role="status" aria-live="polite">正在读取归档信息…</p>
         </footer>
       </div>
     </aside>
 
-    <main class="conversation-pane" id="conversation-pane">
-      <header class="conversation-toolbar">
-        <div>
-          <p class="toolbar-label">当前视图</p>
-          <p class="toolbar-status" id="view-status" role="status" aria-live="polite">正在读取归档信息…</p>
-        </div>
-        <div class="toolbar-actions">
-          <button class="button" id="print-button" type="button" disabled>打印 / 另存 PDF</button>
-          <button class="button" id="previous-chunk" type="button">上一分块</button>
-          <button class="button" id="next-chunk" type="button">下一分块</button>
-        </div>
-      </header>
-
+    <main class="conversation-pane" id="conversation-pane" tabindex="0">
       <section class="message-stage" aria-label="聊天消息">
-        <button class="window-button" id="earlier-window" type="button">显示本块更早消息</button>
+        <button class="window-button" id="earlier-window" type="button">载入更早消息</button>
         <div class="message-list" id="message-list" tabindex="-1"></div>
-        <button class="window-button" id="later-window" type="button">显示本块更新消息</button>
+        <button class="window-button" id="later-window" type="button">载入更新消息</button>
         <div class="empty-state" id="empty-state" hidden>
           <h2>当前范围没有消息</h2>
           <p>可以更换分块，或者清除搜索和筛选条件。</p>
         </div>
       </section>
 
-      <nav class="chunk-navigation" aria-label="分块导航">
-        <button class="button" id="first-chunk" type="button">最早分块</button>
-        <label for="chunk-select">跳转分块</label>
-        <select id="chunk-select"></select>
-        <button class="button" id="latest-chunk" type="button">最新分块</button>
-      </nav>
+
     </main>
   </div>
 

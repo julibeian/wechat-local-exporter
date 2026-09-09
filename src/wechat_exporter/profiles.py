@@ -208,20 +208,51 @@ class AvatarResolver:
         self,
         account: AccountLocation,
         *,
+        workspace: _Workspace | None = None,
         allow_network: bool = False,
         downloader: Callable[[str, int], bytes] | None = None,
         max_bytes: int = _MAX_AVATAR_BYTES,
     ) -> None:
         self.account = account
+        self.workspace = workspace
         self.allow_network = allow_network
         self._downloader = downloader
         self.max_bytes = max(1, int(max_bytes))
         self._account_root = account.account_dir.resolve()
 
     def resolve(self, profile: ContactProfile) -> ResolvedAvatar:
-        reference = profile.avatar
-        if reference is None:
-            return ResolvedAvatar(status="missing", reason="未找到头像元数据")
+        # WeChat 4 stores the actual pictures separately from contact metadata.
+        # Query only the requested identity, and validate bytes before exporting.
+        databases: list[Path] = []
+        if self.workspace is not None:
+            try:
+                databases.append(self.workspace.decrypted_path("head_image\\head_image.db"))
+            except (OSError, ValueError):
+                pass
+        # Existing local tools may have already decrypted this same account's
+        # avatar cache. This is optional metadata, never a source of messages.
+        local_cache = self._account_root / "db_storage_decrypted" / "head_image" / "head_image.db"
+        if local_cache.resolve().is_relative_to(self._account_root):
+            databases.append(local_cache)
+        for database in databases:
+            try:
+                if database.is_file():
+                    connection = _connect_readonly(database)
+                    try:
+                        row = connection.execute(
+                            "SELECT image_buffer FROM head_image WHERE username=? "
+                            "AND length(image_buffer) BETWEEN 1 AND ?",
+                            (profile.username, self.max_bytes),
+                        ).fetchone()
+                    finally:
+                        connection.close()
+                    if row and isinstance(row[0], bytes):
+                        result = self._validate_data(row[0], source="head_image.db 本机头像")
+                        if result.available:
+                            return result
+            except (OSError, sqlite3.Error, ValueError):
+                pass
+        reference = profile.avatar or AvatarReference()
 
         rejected_reason = ""
         if reference.embedded_data:

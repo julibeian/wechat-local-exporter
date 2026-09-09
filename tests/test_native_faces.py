@@ -33,5 +33,10 @@ def test_unknown_brackets_and_media_placeholders_are_not_changed() -> None:
     assert result.raw_text is None
 
 
-def test_native_face_map_is_a_deliberately_small_immutable_whitelist() -> None:
-    assert NATIVE_FACE_MAP == {"[爱心]": "❤️"}
+def test_common_faces_in_real_transcripts_are_visible_and_traceable() -> None:
+    source = "[微笑][强][玫瑰][OK][红包] 微信红包 [图片]"
+    result = normalize_wechat_faces(source)
+    assert result.text == "🙂👍🌹👌[红包] 微信红包 [图片]"
+    assert result.raw_text == source
+    assert len(result.replacements) == 4
+    assert NATIVE_FACE_MAP["[爱心]"] == "❤️"

@@ -154,6 +154,29 @@ def test_real_cold_start_restores_conversation_pane_without_manual_sash_reset(ap
     assert app.sessions_frame.winfo_height() >= 100
 
 
+def test_completed_export_actions_fit_small_window_and_basic_options_are_not_exposed(app):
+    select_conversations(app, Conversation("room@chatroom", "课程资料群", is_group=True))
+    app.root.attributes("-alpha", 0)
+    app.root.geometry("900x800")
+    app.root.deiconify()
+    app.completion_var.set("已完成")
+    app.completion_icon.itemconfigure("all", state="normal")
+    app.root.update()
+    pane_bottom = app.export_frame.winfo_rooty() + app.export_frame.winfo_height()
+    for widget in (app.export_button, app.open_result_button, app.open_folder_button, app.history_button):
+        assert widget.winfo_viewable()
+        assert widget.winfo_width() >= widget.winfo_reqwidth()
+        assert widget.winfo_rooty() + widget.winfo_height() < pane_bottom
+    labels = []
+    stack = [app.export_frame]
+    while stack:
+        widget = stack.pop()
+        stack.extend(widget.winfo_children())
+        if isinstance(widget, gui.ttk.Checkbutton):
+            labels.append(widget.cget("text"))
+    assert not set(labels) & {"系统消息", "本机图片和动态表情", "文件信息", "优先群成员名称", "包含本机文件实体"}
+
+
 def test_conversation_and_export_panes_use_fixed_chat_text_reference_height(app):
     select_conversations(app, Conversation("wxid_friend", "好友"))
     app.root.attributes("-alpha", 0)
@@ -780,7 +803,7 @@ def test_export_continues_in_tray_and_completion_uses_notification(app, monkeypa
     assert any(title == "导出完成" for title, _message, _error in tray.notifications)
 
 
-def test_visible_single_html_export_opens_in_system_browser(app, monkeypatch, tmp_path):
+def test_visible_export_waits_for_explicit_open_and_offers_folder(app, monkeypatch, tmp_path):
     html_path = tmp_path / "好友_聊天记录_HTML" / "index.html"
     html_path.parent.mkdir()
     html_path.write_text("<!doctype html>", encoding="utf-8")
@@ -791,7 +814,7 @@ def test_visible_single_html_export_opens_in_system_browser(app, monkeypatch, tm
     app._active_export_generation = generation
     app._worker_active = True
     app._active_worker_name = "export"
-    monkeypatch.setattr(gui.messagebox, "showinfo", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(gui.messagebox, "showinfo", lambda *_args, **_kwargs: pytest.fail("completion must not show a modal"))
     monkeypatch.setattr(gui.os, "startfile", lambda path: opened.append(path))
 
     app.events.put(
@@ -805,7 +828,12 @@ def test_visible_single_html_export_opens_in_system_browser(app, monkeypatch, tm
     )
     app._poll_events()
 
-    assert opened == [str(html_path)]
+    assert opened == []
+    assert app.completion_var.get() == "已完成"
+    assert app.completion_icon.itemcget(1, "state") == "normal"
+    app.open_result_button.invoke()
+    app.open_folder_button.invoke()
+    assert opened == [str(html_path), str(html_path.parent)]
 
 
 def test_html_browser_failure_warns_without_changing_export_success(

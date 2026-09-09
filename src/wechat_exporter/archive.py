@@ -76,7 +76,7 @@ class WeChatArchive:
         self.contacts: dict[str, str] = {}
         self.profiles: dict[str, ContactProfile] = {}
         self.profile_store = ProfileStore.empty(account)
-        self.avatar_resolver = AvatarResolver(account)
+        self.avatar_resolver = AvatarResolver(account, workspace=workspace)
         self.personal_contacts: set[str] = set()
         self._calibrations = {
             (item.source_db, item.sender_id): item.role for item in calibrations or []
@@ -455,6 +455,9 @@ class WeChatArchive:
                 is_outgoing = False
             else:
                 sender_id = f"未校准发送者#{sender_numeric}"
+        if message_type in (10000, 10002):
+            sender_id = "系统"
+            is_outgoing = False
         if sender_id == self.self_wxid:
             is_outgoing = True
         elif sender_id:

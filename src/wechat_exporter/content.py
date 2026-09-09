@@ -110,7 +110,7 @@ def parse_message_text(local_type: int, raw_content: str) -> str:
     if local_type == 48:
         label = _first_xml_value(content, ("label", "poiname"))
         return f"[位置] {label}".strip()
-    if local_type == 244813135921:
+    if local_type == 244813135921 or app_message_semantic_type(local_type, content) == "quote":
         return _parse_quoted_message(content)
     if local_type == 81604378673:
         return _parse_chat_history(content)
@@ -127,7 +127,24 @@ def parse_message_text(local_type: int, raw_content: str) -> str:
     if local_type == 266287972401:
         title = _first_xml_value(content, ("title",))
         return title or "[拍一拍]"
-    if local_type in (50, 8594229559345, 8589934592049):
+    if local_type == 50:
+        # Do not flatten protocol flags (0 0 0 1 ...) into the transcript.
+        detail = _first_xml_value(content, ("diaplay_content", "display_content", "wording", "title", "des"))
+        if not detail:
+            try:
+                root = ElementTree.fromstring(content)
+                # A leaf <msg> in <voipmsg> is the visible call status. The
+                # outer <msg> envelope may also contain numeric protocol flags.
+                detail = next((node.text or "" for node in root.iter("msg")
+                               if len(node) == 0 and (node.text or "").strip()), "")
+            except ElementTree.ParseError:
+                pass
+        if detail:
+            detail = _strip_xml(detail)
+        elif not content.startswith("<"):
+            detail = re.sub(r"^(?:\d+\s+){3,}", "", content).strip()
+        return _labeled_item("[通话]", detail)
+    if local_type in (8594229559345, 8589934592049):
         label = TYPE_LABELS[local_type]
         detail = _first_xml_value(
             content,
@@ -145,6 +162,9 @@ def parse_message_text(local_type: int, raw_content: str) -> str:
             detail = stripped if stripped != content or not content.startswith("<") else ""
         return _labeled_item(label, detail)
     if local_type in (10000, 10002):
+        replacement = _first_xml_value(content, ("replacemsg",))
+        if replacement:
+            return _strip_xml(replacement)
         stripped = _strip_xml(content)
         return stripped or TYPE_LABELS[local_type]
     known = TYPE_LABELS.get(local_type)
@@ -229,7 +249,7 @@ def extract_message_details(local_type: int, raw_content: str) -> dict[str, obje
         )
         return details or None
 
-    if local_type == 244813135921:
+    if local_type == 244813135921 or app_message_semantic_type(local_type, content) == "quote":
         root = _parse_xml(content)
         refermsg = _find_xml_node(root, "refermsg")
         details = {}
@@ -256,6 +276,15 @@ def extract_message_details(local_type: int, raw_content: str) -> dict[str, obje
             except ValueError:
                 type_number = 0
             _put(details, "quoted_text", _parse_referenced_content(type_number, referenced_content))
+        return details or None
+
+    if local_type == 8589934592049 or app_message_semantic_type(local_type, content) == "transfer":
+        details = {}
+        _put(details, "visible_text", parse_message_text(local_type, content))
+        _put(details, "amount", _first_xml_value(content, ("feedesc",)))
+        _put(details, "memo", _first_xml_value(content, ("pay_memo",)))
+        _put(details, "status_text", _first_xml_value(content, ("receiverdes", "pay_subtype_desc", "title", "des")))
+        _put_integer(details, "paysubtype", _first_xml_value(content, ("paysubtype",)))
         return details or None
 
     if local_type == 81604378673:
@@ -347,6 +376,7 @@ def app_message_semantic_type(local_type: int, raw_content: str) -> str | None:
         33: "mini_program",
         36: "mini_program",
         57: "quote",
+        2000: "transfer",
     }.get(subtype)
 
 

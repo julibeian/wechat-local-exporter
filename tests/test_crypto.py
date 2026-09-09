@@ -142,6 +142,7 @@ def test_collect_required_databases_includes_moments_but_skips_voice_media(tmp_p
         db_dir / "message" / "message_0.db",
         db_dir / "message" / "media_0.db",
         db_dir / "sns" / "sns.db",
+        db_dir / "head_image" / "head_image.db",
     )
     for path in paths:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -152,6 +153,7 @@ def test_collect_required_databases_includes_moments_but_skips_voice_media(tmp_p
         "session\\session.db",
         "message\\message_0.db",
         "sns\\sns.db",
+        "head_image\\head_image.db",
     }
 
 

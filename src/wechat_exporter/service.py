@@ -82,7 +82,7 @@ class ExporterService:
     ) -> WeChatArchive:
         self.using_saved_account_cache = False
         cache = AccountDatabaseCache(self.account)
-        cached_keys = cache.load_keys(self.targets)
+        cached_keys = self._load_cached_keys(cache)
         if cached_keys is not None:
             if progress:
                 progress("已验证同账号本机缓存，正在增量同步数据库...", 0.08)
@@ -116,7 +116,7 @@ class ExporterService:
 
         self.using_saved_account_cache = True
         cache = AccountDatabaseCache(self.account)
-        keys = cache.load_keys(self.targets)
+        keys = self._load_cached_keys(cache)
         if keys is None:
             raise RestartRequired("本机尚无可验证的账号缓存，需要启动微信完成首次连接。")
         if progress:
@@ -127,6 +127,16 @@ class ExporterService:
             calibrations=calibrations,
             database_cache=cache,
         )
+
+    def _load_cached_keys(self, cache: AccountDatabaseCache):
+        keys = cache.load_keys(self.targets)
+        if keys is not None:
+            return keys
+        # Upgrades add an optional avatar database. Older validated message
+        # caches must still open; the next live key capture includes avatars.
+        core = [target for target in self.targets
+                if target.relative_path.lower() != "head_image\\head_image.db"]
+        return cache.load_keys(core) if len(core) != len(self.targets) else None
 
     def connect_during_wechat_start(
         self,

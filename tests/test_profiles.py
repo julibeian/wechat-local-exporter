@@ -21,6 +21,8 @@ class _Workspace:
         self.contact_db = contact_db
 
     def decrypted_path(self, relative_path: str) -> Path:
+        if relative_path.replace("/", "\\").lower() == "head_image\\head_image.db":
+            return self.contact_db.parent / "head_image" / "head_image.db"
         assert relative_path.replace("/", "\\").lower() == "contact\\contact.db"
         return self.contact_db
 
@@ -40,6 +42,32 @@ def _png_bytes(*, size: tuple[int, int] = (12, 8)) -> bytes:
     output = io.BytesIO()
     Image.new("RGB", size, "#2f7d68").save(output, format="PNG")
     return output.getvalue()
+
+
+def test_head_image_database_resolves_exact_identity_and_rejects_corrupt_bytes(tmp_path):
+    account = AccountLocation(tmp_path / 'account', 'wxid_self', 'test')
+    workspace = _Workspace(tmp_path / 'decrypted' / 'contact.db')
+    path = workspace.decrypted_path('head_image/head_image.db')
+    path.parent.mkdir(parents=True)
+    with sqlite3.connect(path) as connection:
+        connection.execute('CREATE TABLE head_image(username TEXT PRIMARY KEY, image_buffer BLOB)')
+        connection.executemany('INSERT INTO head_image VALUES (?, ?)', [
+            ('wxid_friend', _png_bytes()), ('wxid_broken', b'not an image')])
+    resolver = AvatarResolver(account, workspace=workspace)
+    found = resolver.resolve(ContactProfile(username='wxid_friend'))
+    assert found.available and found.data == _png_bytes()
+    assert not resolver.resolve(ContactProfile(username='wxid_other')).available
+    assert not resolver.resolve(ContactProfile(username='wxid_broken')).available
+
+
+def test_same_account_local_head_cache_is_used_without_contact_avatar_hint(tmp_path):
+    account = AccountLocation(tmp_path / 'account', 'wxid_self', 'test')
+    path = account.account_dir / 'db_storage_decrypted/head_image/head_image.db'
+    path.parent.mkdir(parents=True)
+    with sqlite3.connect(path) as connection:
+        connection.execute('CREATE TABLE head_image(username TEXT PRIMARY KEY, image_buffer BLOB)')
+        connection.execute('INSERT INTO head_image VALUES (?, ?)', ('wxid_friend', _png_bytes()))
+    assert AvatarResolver(account).resolve(ContactProfile(username='wxid_friend')).available
 
 
 def test_profile_display_name_priority_and_stable_fallback() -> None:

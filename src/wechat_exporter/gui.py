@@ -859,8 +859,19 @@ class ExporterApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title(f"微信聊天本地导出工具 v{__version__}")
-        self.root.geometry("1060x900")
-        self.root.minsize(900, 800)
+        # Tk window geometry uses physical pixels after DPI awareness is
+        # enabled, while point-sized fonts already follow the display DPI.
+        # Scale both together so a 150% desktop does not lose its message list.
+        scale = max(1.0, self.root.winfo_fpixels("1i") / 96.0)
+        available_width = max(900, self.root.winfo_screenwidth() - 64)
+        available_height = max(800, self.root.winfo_screenheight() - 100)
+        width = min(round(1060 * scale), available_width)
+        height = min(round(900 * scale), available_height)
+        self.root.geometry(f"{width}x{height}")
+        self.root.minsize(
+            min(round(900 * scale), width),
+            min(round(800 * scale), height),
+        )
         self.service: ExporterService | None = None
         self.account: AccountLocation | None = None
         self.wechat_executable: Path | None = None
@@ -990,12 +1001,6 @@ class ExporterApp:
             padx=(4, 0),
             before=self.updates.github_link,
         )
-        self.header_history_button = ttk.Button(
-            title_row,
-            text="导出历史",
-            command=self._show_history,
-        )
-        self.header_history_button.pack(side="right")
 
         source = ttk.LabelFrame(outer, text="1. 连接微信", padding=10)
         self.source_frame = source
@@ -1089,7 +1094,6 @@ class ExporterApp:
         self.export_frame = export
         middle.add(export, weight=2)
         self._build_progressive_export_panel(export)
-        self.history_button = self.header_history_button
 
         status_row = ttk.Frame(outer)
         # Reserve the status row before the expanding paned window.  When native
@@ -1177,7 +1181,7 @@ class ExporterApp:
         for value, label in (
             ("html", "HTML（图文阅读，推荐）"),
             ("json", "JSON（最快）"),
-            ("txt", "TXT（纯文本）"),
+            ("txt", "TXT"),
             ("pdf", "PDF（旧版）"),
         ):
             ttk.Radiobutton(
@@ -1212,23 +1216,9 @@ class ExporterApp:
         self.chat_estimate_label.pack(side="left", anchor="w")
 
         self.html_options_frame = ttk.Frame(self.chat_options_frame)
-        html_primary_row = ttk.Frame(self.html_options_frame)
-        html_primary_row.pack(fill="x")
-        for text, variable in (
-            ("系统消息", self.html_system_messages_var),
-            ("本机图片和动态表情", self.html_media_var),
-            ("文件信息", self.html_file_metadata_var),
-            ("优先群成员名称", self.html_group_names_var),
-        ):
-            ttk.Checkbutton(
-                html_primary_row,
-                text=text,
-                variable=variable,
-            ).pack(side="left", padx=(0, 14))
         html_optional_row = ttk.Frame(self.html_options_frame)
-        html_optional_row.pack(fill="x", pady=(3, 0))
+        html_optional_row.pack(fill="x")
         for text, variable in (
-            ("包含本机文件实体", self.html_file_binaries_var),
             ("包含本机视频", self.html_videos_var),
             ("联网补全缺失图片/表情", self.html_network_var),
         ):
@@ -1237,11 +1227,6 @@ class ExporterApp:
                 text=text,
                 variable=variable,
             ).pack(side="left", padx=(0, 14))
-        ttk.Label(
-            self.html_options_frame,
-            text="默认生成可断网阅读的文件夹；缺失资源会明确标注，不会留下远程链接。",
-            foreground="#6A7280",
-        ).pack(anchor="w", pady=(3, 0))
 
         self.package_options_frame = ttk.LabelFrame(
             export,
@@ -1355,7 +1340,26 @@ class ExporterApp:
         export.rowconfigure(9, weight=1)
         actions = ttk.Frame(export)
         self.actions_frame = actions
-        actions.grid(row=10, column=0, sticky="se", pady=(2, 0))
+        actions.grid(row=10, column=0, sticky="ew", pady=(8, 8))
+        self._last_export_result = None
+        self.completion_var = tk.StringVar(value="")
+        self.completion_icon = tk.Canvas(actions, width=24, height=24,
+                                         background=self.root.cget("background"), highlightthickness=0)
+        self.completion_icon.create_oval(1, 1, 23, 23, fill="#16A05A", outline="", state="hidden")
+        self.completion_icon.create_line(6, 12, 10, 16, 18, 8, fill="white", width=2,
+                                         capstyle="round", joinstyle="round", state="hidden")
+        self.completion_icon.pack(side="left", padx=(0, 5))
+        self.completion_label = ttk.Label(actions, textvariable=self.completion_var,
+                                          foreground="#168447")
+        self.completion_label.pack(side="left", padx=(0, 10))
+        self.open_result_button = ttk.Button(actions, text="打开文件", state="disabled",
+                                             command=lambda: self._open_export_result(False))
+        self.open_result_button.pack(side="left", padx=(0, 6))
+        self.open_folder_button = ttk.Button(actions, text="打开文件夹", state="disabled",
+                                             command=lambda: self._open_export_result(True))
+        self.open_folder_button.pack(side="left")
+        self.history_button = ttk.Button(actions, text="导出历史", command=self._show_history)
+        self.history_button.pack(side="left", padx=6)
         self.cancel_export_button = tk.Button(
             actions,
             text="取消导出",
@@ -1429,7 +1433,10 @@ class ExporterApp:
         self.html_options_frame.pack_forget()
         for frame in chat_frames:
             frame.grid_remove()
-        return max(1, height)
+        # Reserve real content height, including a two-line confirmation that
+        # is populated only after selecting a conversation.
+        line_height = tkfont.nametofont("TkDefaultFont").metrics("linespace")
+        return max(1, height + line_height * 2)
 
     def _on_root_mapped(self, event: tk.Event) -> None:
         if event.widget is not self.root or self._initial_sash_done or self._closed:
@@ -2044,9 +2051,7 @@ class ExporterApp:
         media_note = (
             " · 媒体复制时间取决于本机缓存和视频大小"
             if is_package
-            else " · HTML 会整理本机头像、图片和表情"
-            if chat_format == "html" and self.html_media_var.get()
-            else " · HTML 仅保留媒体占位"
+            else ""
             if chat_format == "html"
             else " · 完整图片受本机缓存/网络影响"
             if chat_format == "pdf" and self.pdf_images_var.get()
@@ -2141,6 +2146,10 @@ class ExporterApp:
         )
 
     def _new_export_operation(self) -> tuple[int, threading.Event]:
+        self.completion_var.set("")
+        self.completion_icon.itemconfigure("all", state="hidden")
+        self.open_result_button.configure(state="disabled")
+        self.open_folder_button.configure(state="disabled")
         self._export_generation += 1
         generation = self._export_generation
         cancelled = threading.Event()
@@ -2196,13 +2205,13 @@ class ExporterApp:
             include_pdf=selected_format == "pdf",
             include_html=selected_format == "html",
             html_options=HtmlExportOptions(
-                include_system_messages=self.html_system_messages_var.get(),
-                include_images=self.html_media_var.get(),
-                include_stickers=self.html_media_var.get(),
-                include_file_metadata=self.html_file_metadata_var.get(),
-                include_file_binaries=self.html_file_binaries_var.get(),
+                include_system_messages=True,
+                include_images=True,
+                include_stickers=True,
+                include_file_metadata=True,
+                include_file_binaries=False,
                 include_videos=self.html_videos_var.get(),
-                prefer_group_member_names=self.html_group_names_var.get(),
+                prefer_group_member_names=True,
                 allow_network_completion=self.html_network_var.get(),
             ),
             include_pdf_images=(
@@ -2592,6 +2601,11 @@ class ExporterApp:
                     self.status_var.set(
                         f"导出完成：{len(result.files)} 个文件 · 实际用时 {actual_duration}"
                     )
+                    self._last_export_result = result
+                    self.completion_var.set("已完成")
+                    self.completion_icon.itemconfigure("all", state="normal")
+                    self.open_result_button.configure(state="normal" if result.files else "disabled")
+                    self.open_folder_button.configure(state="normal" if result.files else "disabled")
                     if self._closing:
                         continue
                     completion_message = (
@@ -2601,15 +2615,6 @@ class ExporterApp:
                         pass
                     elif self._tray_hidden:
                         self._notify_from_tray("导出完成", completion_message)
-                    else:
-                        messagebox.showinfo(
-                            "导出完成",
-                            f"已生成 {len(result.files)} 个文件\n"
-                            f"实际总时长：{actual_duration}\n"
-                            f"保存到：\n{self.output_var.get()}"
-                            + ("\n\n" + "\n".join(result.warnings) if result.warnings else ""),
-                        )
-                        self._open_single_html_result(result)
                 elif kind == "export:cancelled":
                     self._export_started_at = None
                     self._latest_export_status = ""
@@ -2673,6 +2678,23 @@ class ExporterApp:
                 "HTML 已导出但无法自动打开",
                 f"系统浏览器启动失败：{error}\n\n文件仍已安全保存：\n{target}",
             )
+
+    def _open_export_result(self, folder: bool) -> None:
+        result = self._last_export_result
+        if not result or not result.files:
+            return
+        if not folder and len(result.files) > 1:
+            self._show_history()
+            return
+        target = Path(result.files[0])
+        if folder:
+            target = target.parent
+        try:
+            if not target.exists():
+                raise FileNotFoundError(str(target))
+            os.startfile(str(target))  # type: ignore[attr-defined]
+        except (AttributeError, OSError) as error:
+            messagebox.showwarning("无法打开", f"{error}\n\n可从导出历史检查保存位置。")
 
     def _focus_window(self) -> None:
         self._tray_hidden = False

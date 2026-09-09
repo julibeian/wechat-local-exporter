@@ -1,5 +1,15 @@
 from __future__ import annotations
 
+
+def test_call_protocol_fragments_use_wechat_display_wording():
+    from wechat_exporter.content import parse_message_text
+    raw = ('<voipinvitemsg><roomid>0</roomid><status>1</status></voipinvitemsg>'
+           '<voiplocalinfo><duration>0</duration>'
+           '<diaplay_content>已在其它设备拒绝</diaplay_content></voiplocalinfo>')
+    assert parse_message_text(50, raw) == '[通话] 已在其它设备拒绝'
+    assert parse_message_text(50, '<voipmsg><msg>通话时长 04:48</msg><duration>288</duration></voipmsg>') == '[通话] 通话时长 04:48'
+    assert parse_message_text(50, '0 0 0 1 0 0 0 对方已取消') == '[通话] 对方已取消'
+
 import zstandard
 
 from wechat_exporter.content import (

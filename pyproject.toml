@@ -36,7 +36,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-"wechat_exporter.html_assets" = ["*.html", "*.css", "*.js"]
+"wechat_exporter.html_assets" = ["*.html", "*.css", "*.js", "icons/*.svg", "icons/*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

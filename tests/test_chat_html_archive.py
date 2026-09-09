@@ -172,7 +172,10 @@ def test_chat_html_archive_is_offline_safe_and_preserves_visible_content(tmp_pat
         if path.is_file() and path.suffix in {".html", ".css", ".js", ".json", ".txt"}
     )
     assert "http://" not in exported_text
-    assert "https://" not in exported_text
+    # Only an explicit, user-clicked project link may leave the archive.
+    from wechat_exporter import PROJECT_URL
+    assert "https://" not in exported_text.replace(PROJECT_URL, "")
+    assert 'href="' + PROJECT_URL + '"' in exported_text
     assert "搜索全部记录" in result.entrypoint.read_text(encoding="utf-8")
     assert "@media" in (result.root / "assets" / "viewer.css").read_text(
         encoding="utf-8"

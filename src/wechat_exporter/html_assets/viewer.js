@@ -46,12 +46,59 @@
       searchToken: 0,
       highlightedId: "",
       printChunkIndex: -1,
+      loadToken: 0,
+      loading: false,
+      virtual: null,
+      hits: [],
+      hitIndex: -1,
     };
 
     fillSummary(elements);
     fillFilters(elements, participantMap);
     fillChunkSelect(elements);
     bindControls(state);
+    const pane = byId("conversation-pane");
+    let scheduled = false;
+    pane.addEventListener("scroll", function () {
+      if (scheduled || !state.virtual) return;
+      scheduled = true;
+      requestAnimationFrame(function () {
+        scheduled = false;
+        updateViewport(state);
+      });
+    }, { passive: true });
+    // At the physical edge a further gesture continues into the adjacent
+    // chunk. Do not intercept wheel deltas or replace native scrolling.
+    function continueAtEdge(delta) {
+      if (state.loading || !state.virtual) return;
+      if (delta < 0 && pane.scrollTop <= 1 && state.currentChunkIndex > 0) {
+        loadAndShowChunk(state, state.currentChunkIndex - 1, { anchor: "end" });
+      } else if (delta > 0 && pane.scrollHeight - pane.clientHeight - pane.scrollTop <= 1
+        && state.currentChunkIndex < manifest.chunks.length - 1) {
+        loadAndShowChunk(state, state.currentChunkIndex + 1, { anchor: "start" });
+      }
+    }
+    pane.addEventListener("wheel", function (event) { continueAtEdge(event.deltaY); }, { passive: true });
+    pane.addEventListener("keydown", function (event) {
+      if (event.key === "End" || event.key === "Home") {
+        event.preventDefault();
+        if (event.ctrlKey || event.metaKey) {
+          loadAndShowChunk(state, event.key === "Home" ? 0 : manifest.chunks.length - 1,
+            { anchor: event.key === "Home" ? "start" : "end" });
+        } else {
+          renderWindow(state, { anchor: event.key === "Home" ? "start" : "end" });
+        }
+        return;
+      }
+      if (event.key === "PageDown" || event.key === "ArrowDown") continueAtEdge(1);
+      if (event.key === "PageUp" || event.key === "ArrowUp") continueAtEdge(-1);
+    });
+    let touchY = 0;
+    pane.addEventListener("touchstart", function (event) { touchY = event.touches[0].clientY; }, { passive: true });
+    pane.addEventListener("touchend", function (event) { continueAtEdge(touchY - event.changedTouches[0].clientY); }, { passive: true });
+    new ResizeObserver(function () {
+      if (state.virtual) updateViewport(state, true);
+    }).observe(pane);
     cycleTheme(elements.themeButton, "auto", true);
 
     if (manifest.chunks.length === 0) {
@@ -110,12 +157,8 @@
     const firstDate = summary.first_date || "日期未知";
     const lastDate = summary.last_date || "日期未知";
     setText("summary-range", firstDate === lastDate ? firstDate : firstDate + " 至 " + lastDate);
-    setText("summary-chunks", formatNumber(summary.chunks || 0));
-    setText(
-      "summary-media",
-      formatNumber(summary.media_exported || 0) + " 可用 / " + formatNumber(summary.media_missing || 0) + " 缺失"
-    );
-    setText("summary-generated", readableDateTime(manifest.generated_at));
+    setText("summary-chunks", formatNumber(summary.chunks || 0) + " × 2,000");
+    setText("summary-generated", String(manifest.generated_at || "").slice(0, 10));
     if (summary.first_date) {
       elements.dateFrom.min = summary.first_date;
       elements.dateFrom.max = summary.last_date;
@@ -136,12 +179,123 @@
         elements.memberFilter.appendChild(option);
       });
 
-    (manifest.message_types || []).forEach(function (item) {
+    const types = [
+      ["text", "文本", "type"], ["image", "图片", "image"], ["sticker", "表情", "smile"],
+      ["voice", "语音", "mic"], ["video", "视频", "video"], ["file", "文件", "file"],
+      ["quote", "回复", "corner-up-left"], ["chat_history", "转发", "share-2"],
+      ["card", "卡片", "layout"], ["location", "位置", "map-pin"]
+    ];
+    types.forEach(function (item) {
       const option = document.createElement("option");
-      option.value = item.type;
-      option.textContent = item.label + "（" + formatNumber(item.count) + "）";
+      option.value = item[0];
+      option.textContent = item[1];
       elements.typeFilter.appendChild(option);
     });
+    enhanceFilter(elements.memberFilter, "成员", function (value) {
+      const participant = participantMap.get(value);
+      return participant ? createAvatar(participant, {sender: value, sender_name: participant.name}) : null;
+    });
+    enhanceFilter(elements.typeFilter, "消息类型", function (value) {
+      const type = types.find(function (item) { return item[0] === value; });
+      return createIcon(type ? type[2] : "layers");
+    });
+  }
+
+  function createIcon(name) {
+    const image = document.createElement("img");
+    image.className = "ui-icon";
+    image.src = "assets/icons/" + name + ".svg";
+    image.alt = "";
+    return image;
+  }
+
+  function enhanceFilter(select, label, decorate) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "filter-picker";
+    const trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.className = "filter-trigger";
+    trigger.id = select.id + "-trigger";
+    trigger.setAttribute("aria-label", label);
+    trigger.setAttribute("aria-haspopup", "listbox");
+    trigger.setAttribute("aria-expanded", "false");
+    const list = document.createElement("div");
+    list.className = "filter-menu";
+    list.id = select.id + "-menu";
+    list.setAttribute("role", "listbox");
+    list.setAttribute("aria-label", label);
+    list.hidden = true;
+    trigger.setAttribute("aria-controls", list.id);
+    const choices = Array.from(select.options).map(function (option) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "filter-option";
+      button.setAttribute("role", "option");
+      button.dataset.value = option.value;
+      const check = createIcon("check");
+      check.classList.add("option-check");
+      button.append(check);
+      const decoration = decorate(option.value);
+      if (decoration) button.append(decoration);
+      const name = document.createElement("span");
+      name.textContent = option.textContent;
+      button.append(name);
+      button.addEventListener("click", function () {
+        select.value = option.value;
+        sync(); close(); trigger.focus();
+        select.dispatchEvent(new Event("change", {bubbles: true}));
+      });
+      list.append(button);
+      return button;
+    });
+    function sync() {
+      const selected = select.selectedOptions[0];
+      trigger.replaceChildren();
+      if (selected.value) {
+        const decoration = decorate(selected.value);
+        if (decoration) trigger.append(decoration);
+      }
+      const text = document.createElement("span");
+      text.textContent = selected.textContent;
+      trigger.append(text, createIcon("chevrons-down"));
+      choices.forEach(function (button) {
+        button.setAttribute("aria-selected", String(button.dataset.value === select.value));
+      });
+    }
+    function close() { list.hidden = true; trigger.setAttribute("aria-expanded", "false"); }
+    function open() {
+      document.querySelectorAll(".filter-menu").forEach(function (menu) { menu.hidden = true; });
+      document.querySelectorAll(".filter-trigger").forEach(function (button) { button.setAttribute("aria-expanded", "false"); });
+      list.hidden = false; trigger.setAttribute("aria-expanded", "true");
+      const bounds = trigger.getBoundingClientRect();
+      const below = window.innerHeight - bounds.bottom - 12;
+      const above = bounds.top - 12;
+      const upward = below < Math.min(list.scrollHeight, 440) && above > below;
+      wrapper.classList.toggle("opens-up", upward);
+      list.style.maxHeight = Math.max(80, Math.min(440, upward ? above : below)) + "px";
+      const selected = choices[select.selectedIndex] || choices[0];
+      selected.focus({preventScroll: true});
+      selected.scrollIntoView({block: "nearest"});
+    }
+    trigger.addEventListener("click", function () { list.hidden ? open() : close(); });
+    wrapper.addEventListener("keydown", function (event) {
+      if (event.key === "Escape") { close(); trigger.focus(); event.preventDefault(); }
+      if (event.key === "Tab") close();
+      if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+        event.preventDefault();
+        if (list.hidden) { open(); return; }
+        const i = choices.indexOf(document.activeElement);
+        const next = event.key === "Home" ? 0 : event.key === "End" ? choices.length - 1
+          : (i + (event.key === "ArrowDown" ? 1 : -1) + choices.length) % choices.length;
+        choices[next].focus();
+      }
+    });
+    document.addEventListener("click", function (event) { if (!wrapper.contains(event.target)) close(); });
+    select.addEventListener("change", sync);
+    select.form.addEventListener("reset", function () { setTimeout(sync, 0); close(); });
+    wrapper.append(trigger, list);
+    select.after(wrapper);
+    sync();
   }
 
   function fillChunkSelect(elements) {
@@ -155,12 +309,29 @@
 
   function bindControls(state) {
     const elements = state.elements;
+    byId("settings-button").addEventListener("click", function () {
+      const panel = byId("archive-settings");
+      panel.hidden = !panel.hidden;
+      byId("settings-button").setAttribute("aria-expanded", String(!panel.hidden));
+    });
+    byId("search-previous").addEventListener("click", function () { jumpToHit(state, -1); });
+    byId("search-next").addEventListener("click", function () { jumpToHit(state, 1); });
     elements.filterForm.addEventListener("submit", function (event) {
       event.preventDefault();
       runArchiveSearch(state);
     });
     elements.clearButton.addEventListener("click", function () {
       elements.filterForm.reset();
+      state.filterCriteria = null;
+      state.filteredSource = null;
+      state.hits = [];
+      state.hitIndex = -1;
+      byId("search-previous").disabled = true;
+      byId("search-next").disabled = true;
+      elements.searchButton.disabled = false;
+      byId("date-summary").textContent = "全部日期";
+      elements.searchResults.closest(".search-panel").hidden = true;
+      elements.messageList.querySelectorAll(".highlighted").forEach(function (row) { row.classList.remove("highlighted"); });
       elements.searchResults.replaceChildren();
       elements.searchCount.textContent = "0";
       elements.searchHelp.textContent = "输入关键词或选择筛选条件后搜索全部分块。";
@@ -195,17 +366,10 @@
       loadAndShowChunk(state, Number(elements.chunkSelect.value), { anchor: "start" });
     });
     elements.earlierWindow.addEventListener("click", function () {
-      state.windowStart = Math.max(0, state.windowStart - WINDOW_SIZE);
-      renderWindow(state);
-      scrollMessagesToTop();
+      loadAndShowChunk(state, state.currentChunkIndex - 1, { anchor: "end" });
     });
     elements.laterWindow.addEventListener("click", function () {
-      state.windowStart = Math.min(
-        Math.max(0, state.currentRecords.length - 1),
-        state.windowStart + WINDOW_SIZE
-      );
-      renderWindow(state);
-      scrollMessagesToTop();
+      loadAndShowChunk(state, state.currentChunkIndex + 1, { anchor: "start" });
     });
     elements.printButton.addEventListener("click", function () {
       updatePrintDescription(state);
@@ -246,12 +410,15 @@
     if (index < 0 || index >= manifest.chunks.length) {
       return;
     }
+    const token = ++state.loadToken;
+    state.loading = true;
     const chunk = manifest.chunks[index];
     state.elements.viewStatus.textContent = "正在加载 " + chunkLabel(chunk, index) + "…";
     state.elements.printButton.disabled = true;
     setNavigationDisabled(state.elements, true);
     try {
       const records = await loadChunkData(chunk);
+      if (token !== state.loadToken) return;
       state.currentChunkIndex = index;
       state.currentRecords = records;
       clearPreparedPrint(state);
@@ -260,8 +427,11 @@
       renderWindow(state, options || { anchor: "start" });
       setText("summary-current-chunk", String(index + 1) + " / " + String(manifest.chunks.length));
     } catch (error) {
+      if (token !== state.loadToken) return;
       renderEmpty(state, "消息分块无法读取。请确认归档目录没有缺少文件。", error);
     } finally {
+      if (token !== state.loadToken) return;
+      state.loading = false;
       setNavigationDisabled(state.elements, false);
       state.elements.printButton.disabled = state.currentChunkIndex < 0;
       updateNavigation(state);
@@ -284,25 +454,28 @@
       resolvePromise = resolve;
       rejectPromise = reject;
     });
-    pendingChunks.set(chunk.id, {
+    const request = {
       promise,
       resolve: resolvePromise,
       reject: rejectPromise,
-    });
+    };
+    pendingChunks.set(chunk.id, request);
     const script = document.createElement("script");
     script.src = chunk.path;
     script.async = true;
     script.addEventListener("error", function () {
       const pending = pendingChunks.get(chunk.id);
-      pendingChunks.delete(chunk.id);
-      if (pending) {
+      if (pending === request) {
+        pendingChunks.delete(chunk.id);
         pending.reject(new Error("chunk load failed: " + chunk.id));
       }
       script.remove();
     });
     script.addEventListener("load", function () {
       const pending = pendingChunks.get(chunk.id);
-      if (pending) {
+      // A registration resolves immediately, before this script's load event.
+      // A search may already have started a new request for this same chunk.
+      if (pending === request) {
         pendingChunks.delete(chunk.id);
         pending.reject(new Error("chunk did not register: " + chunk.id));
       }
@@ -312,62 +485,173 @@
     return promise;
   }
 
+  // Native scrolling with measured spacers. Keep overlapping DOM nodes alive
+  // so an ordinary wheel gesture does not reload avatars or restart GIFs.
   function renderWindow(state, options) {
-    const records = state.currentRecords;
-    if (options && typeof options.recordIndex === "number") {
-      state.windowStart = clamp(
-        options.recordIndex - Math.floor(WINDOW_SIZE / 2),
-        0,
-        Math.max(0, records.length - WINDOW_SIZE)
-      );
-    } else if (options && options.anchor === "end") {
-      state.windowStart = Math.max(0, records.length - WINDOW_SIZE);
-    } else if (options && options.anchor === "start") {
-      state.windowStart = 0;
-    } else {
-      state.windowStart = clamp(
-        state.windowStart,
-        0,
-        Math.max(0, records.length - WINDOW_SIZE)
-      );
+    if (state.filteredSource !== state.currentRecords || state.filteredCriteria !== state.filterCriteria) {
+      state.filteredSource = state.currentRecords;
+      state.filteredCriteria = state.filterCriteria;
+      state.filteredRecords = state.filterCriteria ? state.currentRecords.filter(function (record) {
+        return matchesCriteria(record, state.filterCriteria);
+      }) : state.currentRecords;
     }
-
-    const end = Math.min(records.length, state.windowStart + WINDOW_SIZE);
-    const visible = records.slice(state.windowStart, end);
-    const fragment = document.createDocumentFragment();
-    let lastDate = "";
-    visible.forEach(function (record) {
-      if (record.date !== lastDate) {
-        fragment.appendChild(createDateDivider(record.date));
-        lastDate = record.date;
-      }
-      fragment.appendChild(createMessage(record, state));
-    });
-    state.elements.messageList.replaceChildren(fragment);
-    state.elements.emptyState.hidden = visible.length > 0;
-    state.elements.earlierWindow.hidden = state.windowStart <= 0;
-    state.elements.laterWindow.hidden = end >= records.length;
-    state.elements.viewStatus.textContent = visible.length
-      ? chunkLabel(manifest.chunks[state.currentChunkIndex], state.currentChunkIndex) +
-        " · 显示第 " + formatNumber(state.windowStart + 1) + "–" + formatNumber(end) + " 条"
-      : "当前分块没有可显示的消息";
-    updateNavigation(state);
-
-    if (state.highlightedId) {
-      requestAnimationFrame(function () {
-        const row = Array.from(state.elements.messageList.querySelectorAll(".message-row")).find(
-          function (element) {
-            return element.dataset.messageId === state.highlightedId;
+    const records = state.filteredRecords;
+    if (options && typeof options.recordIndex === "number") {
+      const target = state.currentRecords[options.recordIndex];
+      options = Object.assign({}, options, {recordIndex: Math.max(0, records.indexOf(target))});
+    }
+    if (!state.virtual || state.virtual.records !== records) {
+      if (state.virtual) state.virtual.observer.disconnect();
+      const top = document.createElement("div");
+      const bottom = document.createElement("div");
+      top.className = bottom.className = "virtual-spacer";
+      top.setAttribute("aria-hidden", "true");
+      bottom.setAttribute("aria-hidden", "true");
+      const heights = records.map(function (record, index) {
+        const dateHeight = index === 0 || record.date !== records[index - 1].date ? 52 : 0;
+        const mediaHeight = (record.media || []).some(function (media) { return media.status === "exported"; }) ? 150 : 0;
+        return 66 + dateHeight + mediaHeight + Math.floor(String(record.text || "").length / 42) * 21;
+      });
+      const virtual = { records, heights, offsets: [], nodes: new Map(), top, bottom,
+        start: -1, end: -1, observer: null, pinEnd: false };
+      state.virtual = virtual;
+      rebuildOffsets(virtual);
+      virtual.observer = new ResizeObserver(function (entries) {
+        if (state.virtual !== virtual) return;
+        const pane = byId("conversation-pane");
+        const position = pane.scrollTop - listOffset(state);
+        const anchor = indexAt(virtual.offsets, position);
+        const within = position - virtual.offsets[anchor];
+        let changed = false;
+        entries.forEach(function (entry) {
+          const index = Number(entry.target.dataset.index);
+          const height = entry.borderBoxSize && entry.borderBoxSize[0]
+            ? entry.borderBoxSize[0].blockSize : entry.target.getBoundingClientRect().height;
+          if (height > 0 && Math.abs(virtual.heights[index] - height) > 0.5) {
+            virtual.heights[index] = height;
+            changed = true;
           }
-        );
+        });
+        if (!changed) return;
+        rebuildOffsets(virtual);
+        setSpacers(virtual);
+        // Compensation is instantaneous. CSS smooth scrolling here would fight
+        // the user's wheel and make every decoded image move the viewport.
+        pane.scrollTop = virtual.pinEnd ? pane.scrollHeight - pane.clientHeight
+          : listOffset(state) + virtual.offsets[anchor] + within;
+        requestAnimationFrame(function () { updateViewport(state); });
+      });
+      state.elements.messageList.replaceChildren(top, bottom);
+    }
+    const virtual = state.virtual;
+    const pane = byId("conversation-pane");
+    const opts = options || {};
+    virtual.pinEnd = opts.anchor === "end";
+    if (opts.anchor === "start") pane.scrollTop = 0;
+    if (typeof opts.recordIndex === "number") {
+      pane.scrollTop = listOffset(state) + virtual.offsets[opts.recordIndex];
+    }
+    updateViewport(state, true, typeof opts.recordIndex === "number" ? opts.recordIndex
+      : opts.anchor === "end" ? Math.max(0, records.length - 1) : undefined);
+    if (opts.anchor === "end") pane.scrollTop = pane.scrollHeight - pane.clientHeight;
+    if (state.highlightedId) {
+      const highlighted = state.highlightedId;
+      requestAnimationFrame(function () {
+        if (state.virtual !== virtual) return;
+        const row = Array.from(state.elements.messageList.querySelectorAll("[data-message-id]")).find(
+          function (element) { return element.dataset.messageId === highlighted; });
         if (row) {
           row.classList.add("highlighted");
-          row.scrollIntoView({ block: "center" });
+          row.scrollIntoView({ block: "center", behavior: "instant" });
           row.focus({ preventScroll: true });
         }
-        state.highlightedId = "";
       });
+      state.highlightedId = "";
     }
+    state.elements.emptyState.hidden = records.length > 0;
+    state.elements.earlierWindow.hidden = state.currentChunkIndex <= 0;
+    state.elements.laterWindow.hidden = state.currentChunkIndex >= manifest.chunks.length - 1;
+    updateNavigation(state);
+  }
+
+  function listOffset(state) {
+    const pane = byId("conversation-pane");
+    return state.elements.messageList.getBoundingClientRect().top - pane.getBoundingClientRect().top + pane.scrollTop;
+  }
+
+  function rebuildOffsets(virtual) {
+    virtual.offsets = [0];
+    virtual.heights.forEach(function (height, i) { virtual.offsets.push(virtual.offsets[i] + height); });
+  }
+
+  function indexAt(offsets, position) {
+    let low = 0, high = Math.max(0, offsets.length - 2);
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      if (offsets[mid] <= position) low = mid;
+      else high = mid - 1;
+    }
+    return low;
+  }
+
+  function setSpacers(virtual) {
+    if (virtual.start < 0) return;
+    virtual.top.style.height = virtual.offsets[virtual.start] + "px";
+    virtual.bottom.style.height = (virtual.offsets[virtual.records.length] - virtual.offsets[virtual.end]) + "px";
+  }
+
+  function updateViewport(state, force, target) {
+    const virtual = state.virtual;
+    if (!virtual || !virtual.records.length) return;
+    const pane = byId("conversation-pane");
+    const position = Math.max(0, pane.scrollTop - listOffset(state));
+    const index = typeof target === "number" ? target : indexAt(virtual.offsets, position);
+    if (virtual.pinEnd && pane.scrollHeight - pane.scrollTop - pane.clientHeight > 4 && target === undefined) virtual.pinEnd = false;
+    const start = clamp(index - 35, 0, Math.max(0, virtual.records.length - WINDOW_SIZE));
+    const end = Math.min(virtual.records.length, start + WINDOW_SIZE);
+    if (!force && index >= virtual.start + 12 && index < virtual.end - 35) return;
+    if (virtual.start === start && virtual.end === end && !force) return;
+    virtual.start = start;
+    virtual.end = end;
+    state.windowStart = start;
+    for (const [i, node] of virtual.nodes) {
+      if (i < start || i >= end) {
+        virtual.observer.unobserve(node);
+        node.remove();
+        virtual.nodes.delete(i);
+      }
+    }
+    // Insert only new nodes in chronological order; retained nodes never detach.
+    let next = virtual.bottom;
+    for (let i = end - 1; i >= start; i -= 1) {
+      let node = virtual.nodes.get(i);
+      if (!node) {
+        node = document.createElement("div");
+        node.className = "virtual-item";
+        node.dataset.index = String(i);
+        if (i === 0 || virtual.records[i].date !== virtual.records[i - 1].date) {
+          node.appendChild(createDateDivider(virtual.records[i].date));
+        }
+        node.appendChild(createMessage(virtual.records[i], state));
+        state.elements.messageList.insertBefore(node, next);
+        virtual.nodes.set(i, node);
+        virtual.observer.observe(node);
+      }
+      next = node;
+    }
+    setSpacers(virtual);
+    state.elements.viewStatus.textContent = "第 " + (state.currentChunkIndex + 1) + " / " + manifest.chunks.length +
+      " 块 · " + formatNumber(virtual.records.length) + " 条消息";
+  }
+
+  function jumpToHit(state, delta) {
+    if (!state.hits.length) return;
+    state.hitIndex = (state.hitIndex + delta + state.hits.length) % state.hits.length;
+    const hit = state.hits[state.hitIndex];
+    state.elements.searchResults.querySelectorAll("button").forEach(function (button, index) {
+      button.setAttribute("aria-current", String(index === state.hitIndex));
+    });
+    loadAndShowChunk(state, hit.chunkIndex, { recordIndex: hit.recordIndex, highlightedId: hit.record.id });
   }
 
   function createDateDivider(dateValue) {
@@ -419,7 +703,7 @@
 
     const bubble = document.createElement("div");
     bubble.className = "message-bubble message-type-" + safeClassName(record.type);
-    if (record.text) {
+    if (record.text && !record.attachment && !record.payment) {
       const text = document.createElement("p");
       text.className = "message-text";
       text.textContent = record.text;
@@ -429,7 +713,12 @@
       bubble.appendChild(createMediaList(record.media, state, record, options));
     }
     if (record.attachment) {
+      bubble.classList.add("card-bubble");
       bubble.appendChild(createAttachment(record.attachment));
+    }
+    if (record.payment) {
+      bubble.classList.add("card-bubble");
+      bubble.appendChild(createPayment(record.payment));
     }
     if (!bubble.childNodes.length) {
       const emptyText = document.createElement("p");
@@ -438,12 +727,18 @@
       bubble.appendChild(emptyText);
     }
     stack.appendChild(bubble);
+    if (record.quote) {
+      const quote = document.createElement("blockquote");
+      quote.className = "message-quote";
+      quote.textContent = (record.quote.sender_name || "未知成员") + "：" + (record.quote.text || "原消息内容不可用");
+      stack.appendChild(quote);
+    }
 
     const time = document.createElement("time");
     time.className = "message-time";
     time.dateTime = record.datetime;
     time.textContent = readableDateTime(record.datetime);
-    stack.appendChild(time);
+    sender.appendChild(time);
     row.appendChild(stack);
     return row;
   }
@@ -554,10 +849,32 @@
     ].filter(Boolean).join(" · ");
     const status = document.createElement("span");
     status.className = "attachment-status";
-    status.textContent = attachment.status === "exported"
-      ? "点击打开本地副本"
-      : attachment.reason || "仅保存文件信息，未包含原件";
-    card.append(name, meta, status);
+    status.textContent = attachment.status === "exported" ? "打开文件" : "文件信息";
+    card.title = attachment.status === "exported" ? "打开本地副本" : attachment.reason || "可通过批量聊天文件提取原件";
+    const extension = String(attachment.extension || "").toLowerCase();
+    const icon = createIcon(["xls", "xlsx", "csv"].includes(extension) ? "file-excel" : "file");
+    icon.classList.add("attachment-icon");
+    if (["xls", "xlsx", "csv"].includes(extension)) icon.classList.add("spreadsheet-icon");
+    card.append(name, meta, icon, status);
+    return card;
+  }
+
+  function createPayment(payment) {
+    const card = document.createElement("div");
+    const settled = Number(payment.paysubtype) === 3;
+    card.className = "payment-card" + (settled ? " settled" : "");
+    const icon = createIcon(settled ? "check-circle" : "repeat");
+    icon.classList.add("payment-icon");
+    const amount = document.createElement("strong");
+    amount.textContent = payment.amount || "微信转账";
+    const status = document.createElement("span");
+    status.className = "payment-status";
+    const visibleStatus = payment.status_text === "微信转账" ? "" : payment.status_text;
+    status.textContent = visibleStatus || ({1: "待收款", 3: "已收款"}[payment.paysubtype]) || payment.memo || "转账记录";
+    const footer = document.createElement("span");
+    footer.className = "payment-footer";
+    footer.textContent = "微信转账";
+    card.append(icon, amount, status, footer);
     return card;
   }
 
@@ -660,16 +977,26 @@
   async function runArchiveSearch(state) {
     const elements = state.elements;
     const criteria = readCriteria(elements);
+    const token = ++state.searchToken;
+    state.hits = [];
+    state.hitIndex = -1;
+    byId("search-previous").disabled = true;
+    byId("search-next").disabled = true;
+    state.filterCriteria = Object.assign({}, criteria, {query: ""});
+    renderWindow(state, {anchor: "start"});
+    elements.searchResults.closest(".search-panel").hidden = false;
+    byId("date-summary").textContent = criteria.dateFrom || criteria.dateTo
+      ? (criteria.dateFrom || "最早") + " → " + (criteria.dateTo || "最新") : "全部日期";
     if (!criteria.query && !criteria.member && !criteria.type && !criteria.dateFrom && !criteria.dateTo) {
       elements.searchResults.replaceChildren();
       elements.searchCount.textContent = "0";
       elements.searchHelp.textContent = "输入关键词或选择筛选条件后搜索全部分块。";
+      elements.searchButton.disabled = false;
+      elements.searchResults.closest(".search-panel").hidden = true;
       renderWindow(state);
       return;
     }
 
-    const token = state.searchToken + 1;
-    state.searchToken = token;
     elements.searchButton.disabled = true;
     elements.searchResults.replaceChildren();
     let totalMatches = 0;
@@ -696,6 +1023,9 @@
         return;
       }
       renderSearchResults(state, saved, totalMatches);
+      if (!criteria.query && saved.length) {
+        await loadAndShowChunk(state, saved[0].chunkIndex, {recordIndex: saved[0].recordIndex});
+      }
     } catch (error) {
       elements.searchHelp.textContent = "搜索中断：某个消息分块无法读取。";
     } finally {
@@ -706,8 +1036,12 @@
   }
 
   function renderSearchResults(state, hits, totalMatches) {
+    state.hits = hits;
+    state.hitIndex = -1;
+    byId("search-previous").disabled = !hits.length;
+    byId("search-next").disabled = !hits.length;
     const fragment = document.createDocumentFragment();
-    hits.forEach(function (hit) {
+    hits.forEach(function (hit, hitIndex) {
       const item = document.createElement("li");
       const button = document.createElement("button");
       button.type = "button";
@@ -720,6 +1054,7 @@
       preview.textContent = messageAccessibleText(hit.record);
       button.append(meta, preview);
       button.addEventListener("click", function () {
+        state.hitIndex = hitIndex;
         loadAndShowChunk(state, hit.chunkIndex, {
           recordIndex: hit.recordIndex,
           highlightedId: hit.record.id,
@@ -758,7 +1093,8 @@
     if (criteria.member && record.sender !== criteria.member) {
       return false;
     }
-    if (criteria.type && record.type !== criteria.type) {
+    const category = ["link", "mini_program", "contact_card", "video_card", "music", "transfer", "red_packet"].includes(record.type) ? "card" : record.type;
+    if (criteria.type && category !== criteria.type) {
       return false;
     }
     if (criteria.dateFrom && record.date < criteria.dateFrom) {
@@ -772,7 +1108,9 @@
     }
     const attachmentName = record.attachment && record.attachment.filename ? record.attachment.filename : "";
     const haystack = normalizeSearch(
-      [record.text, record.raw_text, record.sender_name, attachmentName, record.type]
+      [record.text, record.raw_text, record.sender_name, attachmentName, record.type,
+       record.quote && record.quote.text, record.quote && record.quote.sender_name,
+       record.payment && record.payment.amount]
         .filter(Boolean)
         .join("\n")
     );
@@ -783,9 +1121,9 @@
     const elements = state.elements;
     const index = state.currentChunkIndex;
     elements.previousChunk.disabled = index <= 0;
-    elements.firstChunk.disabled = index <= 0;
+      elements.firstChunk.disabled = index < 0;
     elements.nextChunk.disabled = index < 0 || index >= manifest.chunks.length - 1;
-    elements.latestChunk.disabled = index < 0 || index >= manifest.chunks.length - 1;
+      elements.latestChunk.disabled = index < 0;
   }
 
   function setNavigationDisabled(elements, value) {
@@ -797,6 +1135,8 @@
   }
 
   function renderEmpty(state, message, error) {
+    if (state.virtual) state.virtual.observer.disconnect();
+    state.virtual = null;
     state.elements.messageList.replaceChildren();
     state.elements.emptyState.hidden = false;
     const heading = state.elements.emptyState.querySelector("h2");
@@ -846,7 +1186,9 @@
     } else {
       document.documentElement.dataset.theme = theme;
     }
-    button.textContent = "主题：" + ({ auto: "自动", light: "浅色", dark: "深色" }[theme] || "自动");
+    button.replaceChildren(createIcon("moon"));
+    button.title = "主题：" + ({ auto: "自动", light: "浅色", dark: "深色" }[theme] || "自动");
+    button.setAttribute("aria-label", button.title);
     if (!initial) {
       try {
         sessionStorage.setItem("wechat-archive-theme", theme);
@@ -859,7 +1201,8 @@
         const saved = sessionStorage.getItem("wechat-archive-theme");
         if (saved && saved !== "auto") {
           document.documentElement.dataset.theme = saved;
-          button.textContent = "主题：" + ({ light: "浅色", dark: "深色" }[saved] || "自动");
+          button.title = "主题：" + ({ light: "浅色", dark: "深色" }[saved] || "自动");
+          button.setAttribute("aria-label", button.title);
         }
       } catch (error) {
         // Ignore unavailable storage in local-file privacy modes.

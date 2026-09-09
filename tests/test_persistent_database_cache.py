@@ -63,6 +63,25 @@ def test_account_cache_roundtrips_only_valid_complete_key_sets(tmp_path, monkeyp
     assert cache.load_keys((changed,)) is None
 
 
+def test_avatar_upgrade_keeps_valid_core_cache_but_rejects_changed_core(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from wechat_exporter.service import ExporterService
+
+    account = AccountLocation(tmp_path / 'account', 'wxid_a', 'test')
+    core = _target(account.db_dir / 'session/session.db')
+    head = replace(core, relative_path='head_image\\head_image.db')
+    cache = AccountDatabaseCache(account, root=tmp_path / 'cache',
+        protect=lambda data, **_: data, unprotect=lambda data, **_: data)
+    monkeypatch.setattr(database_cache, 'verify_key', lambda key, _: key == b'k' * 32)
+    cache.save_keys(DatabaseKeys({core.relative_path: b'k' * 32}), (core,))
+    service = object.__new__(ExporterService)
+    service.targets = [core, head]
+    keys = service._load_cached_keys(cache)
+    assert keys is not None and keys.paths() == (core.relative_path,)
+    service.targets = [replace(core, salt=b'changed'), head]
+    assert service._load_cached_keys(cache) is None
+
+
 def test_persistent_workspace_reuses_unchanged_db_and_refreshes_only_changes(
     tmp_path,
     monkeypatch,
