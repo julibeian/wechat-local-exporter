@@ -42,10 +42,12 @@ def test_wechat_labels_use_original_artwork_without_reinterpreting_unicode():
     assert render_native_face("[未知表情]", 20) is None
 
 
-def test_color_cells_follow_scroll_resize_search_and_native_multiselection(app):
+@pytest.mark.parametrize("summary_width", [200, 1600])
+def test_color_cells_follow_scroll_resize_search_and_native_multiselection(app, summary_width):
     conversations = [Conversation(f"test-{i}", f"验收{i:03d}", summary="谢谢[玫瑰] [吃瓜][握手][咖啡][OK]")
                      for i in range(65)]
     select_conversations(app, *conversations)
+    app.tree.column("summary", width=summary_width, stretch=False)
     app.root.attributes("-alpha", 0)
     app.root.deiconify()
     app.root.update()
@@ -54,7 +56,12 @@ def test_color_cells_follow_scroll_resize_search_and_native_multiselection(app):
     initial = set(renderer.cells)
     iid, cell = next(iter(renderer.cells.items()))
     x, y, width, height = app.tree.bbox(iid, "summary")
-    assert (cell.winfo_x(), cell.winfo_y(), cell.winfo_width(), cell.winfo_height()) == (x, y, width, height)
+    assert (cell.winfo_x(), cell.winfo_y(), cell.winfo_height()) == (x, y, height)
+    # A column can extend beyond the viewport; the overlay must stop at the
+    # visible table edge while retaining the full width of an in-bounds cell.
+    viewport_right = app.tree.winfo_width() - 1
+    assert cell.winfo_width() > 0
+    assert cell.winfo_x() + cell.winfo_width() == min(x + width, viewport_right)
     # Bitmap edges fit in the same line height as the text, centered vertically.
     font = tkfont.Font(root=app.root, font=renderer._font)
     for item in cell.find_all():
