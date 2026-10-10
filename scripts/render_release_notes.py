@@ -37,7 +37,7 @@ def render_release_notes(
     if len(sections) != 1 or not sections[0]:
         raise ValueError(f"Expected exactly one non-empty release notes section for {tag}")
 
-    installer = f"WeChat-Local-Exporter-Installer-{tag}.exe"
+    installer = f"WeChat-TXT-PDF-Exporter-Installer-{tag}.exe"
     available = set(asset_names if asset_names is not None else [installer])
     if installer not in available:
         raise ValueError(f"Recommended installer is missing: {installer}")

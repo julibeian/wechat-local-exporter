@@ -75,9 +75,10 @@ def stage_update(download: DownloadedUpdate) -> Path:
         raise UserFacingError("源码运行模式不替换 Python；自动更新仅用于 Windows 安装版。")
     current = Path(sys.executable).resolve()
     if (
-        download.kind != installation_kind(current)
+        download.kind not in {installation_kind(current), "executable"}
         or not verified(download.path, download.sha256)
         or not _valid_sha256(download.target_sha256)
+        or (download.kind == "executable" and download.sha256 != download.target_sha256)
     ):
         raise UserFacingError("更新文件未通过安装前检查，当前版本保持不变。")
     # Every retry gets its own ready/abort files; a slow previous helper must
@@ -105,14 +106,16 @@ def stage_update(download: DownloadedUpdate) -> Path:
 def apply_update(plan: UpdatePlan, *, launch=_launch) -> None:
     """Called only after the old process exits. Kept separate for failure tests."""
     payload, target = Path(plan.payload), Path(plan.target)
-    if (plan.kind not in {"installer", "portable"} or not verified(payload, plan.sha256)
+    if (plan.kind not in {"installer", "portable", "executable"} or not verified(payload, plan.sha256)
             or not _valid_sha256(plan.target_sha256)
+            or (plan.kind == "executable" and plan.sha256 != plan.target_sha256)
             or target.suffix.lower() != ".exe" or not target.is_file()
             or payload.resolve() == target.resolve()):
         raise UserFacingError("安装前校验失败，原程序未被替换。")
     backup = payload.parent / "previous.exe"
     shutil.copy2(target, backup)
     changed = False
+    previous_version = None
     try:
         if plan.kind == "installer":
             if installation_kind(target) != "installer":
@@ -138,16 +141,37 @@ def apply_update(plan: UpdatePlan, *, launch=_launch) -> None:
                 changed = True
             finally:
                 staging.unlink(missing_ok=True)
+        if plan.kind == "executable":
+            previous_version = _installed_display_version(target, plan.version)
         launch(target)
     except Exception:
         if changed:
             shutil.copy2(backup, target)
+        if previous_version is not None:
+            _installed_display_version(target, previous_version)
         try:
             launch(target)
         except Exception:
             pass
         raise UserFacingError("更新未完成，已尝试恢复并启动原版本；导出文件不受影响。") from None
     # Keep the rollback copy until the next app startup cleans this update folder.
+
+
+def _installed_display_version(target: Path, version: str) -> str | None:
+    if os.name != "nt" or installation_kind(target) != "installer":
+        return None
+    import winreg
+    key_name = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{A7639FD4-469B-41C7-A3A0-901C8E6D12E3}_is1"
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_name, 0, winreg.KEY_READ | winreg.KEY_SET_VALUE) as key:
+            location, _ = winreg.QueryValueEx(key, "InstallLocation")
+            if Path(location).resolve() != target.parent.resolve():
+                return None
+            previous, _ = winreg.QueryValueEx(key, "DisplayVersion")
+            winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, normalize_version(version))
+            return previous
+    except OSError:
+        return None
 
 
 def _wait_for_parent(plan: UpdatePlan, directory: Path) -> bool:
@@ -201,11 +225,12 @@ def run_helper(plan_path: Path) -> int:
             return 2
         plan = UpdatePlan(**json.loads(plan_path.read_text(encoding="utf-8")))
         normalize_version(plan.version)
-        if (plan.kind not in {"installer", "portable"} or type(plan.parent_pid) is not int
+        if (plan.kind not in {"installer", "portable", "executable"} or type(plan.parent_pid) is not int
                 or plan.parent_pid <= 0 or Path(plan.payload).resolve().parent != directory
                 or Path(plan.target).resolve().parent == directory
                 or not verified(Path(plan.payload), plan.sha256)
-                or not _valid_sha256(plan.target_sha256)):
+                or not _valid_sha256(plan.target_sha256)
+                or (plan.kind == "executable" and plan.sha256 != plan.target_sha256)):
             return 2
         if not _wait_for_parent(plan, directory):
             return 3

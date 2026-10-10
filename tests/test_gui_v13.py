@@ -10,7 +10,7 @@ import pytest
 from wechat_exporter import gui, update_ui
 from wechat_exporter.models import AccountLocation, Conversation, ExportResult
 from wechat_exporter.service import RestartRequired
-from wechat_exporter.update import CheckResult, Release
+from wechat_exporter.update import CheckResult, DownloadedUpdate, Release
 
 
 @pytest.fixture(scope="module")
@@ -570,6 +570,111 @@ def test_update_network_thread_does_not_block_tk(app):
         assert not app._worker_active  # Local actions have their own worker state.
     finally:
         release.set()
+
+
+def prepare_quick_update(app, tmp_path, monkeypatch):
+    controller = app.updates
+    monkeypatch.setattr(update_ui, "installation_kind", lambda: "installer")
+    controller.manager.result = CheckResult("available", "1.7.0", (Release("1.7.0", "", "更新内容"),))
+    payload = tmp_path / "update.exe"
+    payload.write_bytes(b"new executable")
+    downloaded = DownloadedUpdate(payload, "a" * 64, "a" * 64, "1.7.0", "executable")
+    downloads, staged, stopped = [], [], []
+    def download(release, kind, **kwargs):
+        downloads.append((release.version, kind))
+        return downloaded
+    controller.manager.source = SimpleNamespace(download=download)
+    plan_path = tmp_path / "install" / "plan.json"
+    plan_path.parent.mkdir()
+    plan_path.write_text("{}")
+    def stage(value):
+        staged.append(value)
+        return plan_path
+    monkeypatch.setattr(update_ui, "stage_update", stage)
+    controller._worker = lambda operation, function: controller.events.put((operation, function()))
+    controller.shutdown = lambda: stopped.append(True)
+    controller.refresh()
+    return controller, downloads, staged, stopped, plan_path
+
+
+def test_update_icon_appears_after_github_and_survives_banner_dismissal(app, monkeypatch):
+    controller = app.updates
+    assert controller.update_button.winfo_manager() == ""
+    controller.manager.result = CheckResult("available", "1.7.0")
+    controller.refresh()
+    assert controller.update_button.winfo_manager() == "pack"
+    packed = controller.github_link.master.pack_slaves()
+    assert packed.index(controller.update_button) > packed.index(controller.github_link)
+    controller.dismiss()
+    assert controller.banner.winfo_manager() == ""
+    assert controller.update_button.winfo_manager() == "pack"
+    controller.manager.result = CheckResult("latest", "1.6.1")
+    controller.refresh()
+    assert controller.update_button.winfo_manager() == ""
+
+
+def test_quick_update_click_downloads_then_hands_off_without_extra_confirmation(app, tmp_path, monkeypatch):
+    controller, downloads, staged, stopped, plan_path = prepare_quick_update(app, tmp_path, monkeypatch)
+    controller.busy = lambda: False
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **kw: pytest.fail("An update click already authorizes installation"))
+    controller.update_button.invoke()
+    controller.dialog.destroy()
+    controller._poll()
+    assert downloads == [("1.7.0", "installer")]
+    assert len(staged) == 1
+    assert stopped == []  # The independent helper must be ready before exiting.
+    (plan_path.parent / "ready").touch()
+    controller._poll()
+    assert stopped == [True]
+
+
+def test_quick_update_waits_for_existing_work_then_installs_automatically(app, tmp_path, monkeypatch):
+    controller, downloads, staged, stopped, plan_path = prepare_quick_update(app, tmp_path, monkeypatch)
+    busy = [True]
+    controller.busy = lambda: busy[0]
+    controller.update_button.invoke()
+    controller._poll()
+    assert downloads == [("1.7.0", "installer")]
+    assert staged == stopped == []
+    assert "等待" in controller.download_status.get()
+    assert controller.update_button.instate(["disabled"])
+    busy[0] = False
+    controller._poll()
+    assert len(staged) == 1
+    (plan_path.parent / "ready").touch()
+    controller._poll()
+    assert stopped == [True]
+
+
+def test_quick_update_cached_notification_fetches_metadata_before_download(app, tmp_path, monkeypatch):
+    controller, downloads, staged, stopped, plan_path = prepare_quick_update(app, tmp_path, monkeypatch)
+    controller.busy = lambda: False
+    complete = controller.manager.result
+    controller.manager.result = CheckResult("available", "1.7.0")
+    checks = []
+    def check(**kwargs):
+        checks.append(kwargs)
+        controller.manager.result = complete
+        return complete
+    controller.manager.check = check
+    controller.update_button.invoke()
+    assert downloads == []
+    controller._poll()
+    assert checks == [{"automatic": False}]
+    assert downloads == [("1.7.0", "installer")]
+    assert len(staged) == 1
+
+
+def test_quick_update_failure_allows_retry_and_preserves_running_app(app, tmp_path, monkeypatch):
+    controller, downloads, staged, stopped, _plan_path = prepare_quick_update(app, tmp_path, monkeypatch)
+    controller.active = True
+    controller._install_requested = True
+    controller.events.put(("failure", "网络不可达"))
+    controller._poll()
+    assert not controller.active and not controller.installing
+    assert controller.update_button.instate(["!disabled"])
+    assert staged == stopped == []
+    assert "网络不可达" in controller.download_status.get()
 
 
 def test_date_shortcuts_are_on_primary_export_page(app):

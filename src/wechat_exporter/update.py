@@ -6,6 +6,7 @@ import hmac
 import json
 import re
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -17,6 +18,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from . import PROJECT_URL, __version__
 from .config import LocalConfig, app_data_dir
+from .delta_update import apply_delta, file_sha256
 from .errors import UserFacingError
 
 
@@ -99,10 +101,12 @@ class Release:
     target_sha256: str = ""
 
     def asset(self, kind: str) -> Asset | None:
-        if kind not in {"installer", "portable", "checksum"}:
+        if kind not in {"installer", "portable", "checksum", "update"}:
             raise ValueError("未知更新类型")
         if kind == "checksum":
             names = [f"SHA256SUMS-v{self.version}.txt"]
+        elif kind == "update":
+            names = [f"WeChat-Local-Exporter-Update-v{self.version}.exe"]
         else:
             suffix = f"{'Installer-' if kind == 'installer' else ''}v{self.version}.exe"
             names = [f"WeChat-Local-Exporter-{suffix}", f"WeChat-TXT-PDF-Exporter-{suffix}"]
@@ -113,6 +117,11 @@ class Release:
             if matches:
                 return matches[0] if len(matches) == 1 else None
         return None
+
+    def delta_asset(self, source_version: str, source_sha256: str) -> Asset | None:
+        name = f"WeChat-Local-Exporter-Delta-v{source_version}-to-v{self.version}-{source_sha256[:12]}.zip"
+        matches = [asset for asset in self.assets if asset.name == name]
+        return matches[0] if len(matches) == 1 else None
 
 
 class UpdateSource(Protocol):
@@ -131,9 +140,12 @@ class DownloadedUpdate:
 
 
 class GitHubSource:
-    def __init__(self, *, opener=open_url, download_root: Path | None = None):
+    def __init__(self, *, opener=open_url, download_root: Path | None = None,
+                 current_executable: Path | None = None, current_version: str = __version__):
         self.opener = opener
         self.download_root = download_root if download_root is not None else app_data_dir() / "updates"
+        self.current_executable = current_executable
+        self.current_version = current_version
 
     def releases(self) -> tuple[Release, ...]:
         raw = json.loads(_read_bounded(_RELEASES_API_URL, self.opener))
@@ -208,10 +220,35 @@ class GitHubSource:
 
     def download(self, release: Release, kind: str, *, progress=None,
                  cancelled: threading.Event | None = None) -> DownloadedUpdate:
+        if kind in {"installer", "portable"}:
+            current = self.current_executable
+            if current is None and getattr(sys, "frozen", False):
+                current = Path(sys.executable)
+            if current is not None and current.is_file() and release.target_sha256:
+                delta = release.delta_asset(self.current_version, file_sha256(current))
+                if delta is not None and delta.sha256:
+                    downloaded = None
+                    try:
+                        downloaded = self._download_payload(delta, "delta", release.target_sha256,
+                                                            version=release.version, progress=progress, cancelled=cancelled)
+                        target = downloaded.path.parent / "updated.exe"
+                        apply_delta(current, downloaded.path, target, target_sha256=release.target_sha256,
+                                    source_version=self.current_version, target_version=release.version,
+                                    cancelled=cancelled)
+                        return DownloadedUpdate(target, release.target_sha256, release.target_sha256,
+                                                release.version, "executable")
+                    except Exception:
+                        if downloaded is not None:
+                            self._discard_download(downloaded.path.parent)
+                        if cancelled is not None and cancelled.is_set():
+                            raise UserFacingError("已取消下载，当前版本不受影响。") from None
+                full = release.asset("update")
+                if full is not None and full.sha256 == release.target_sha256:
+                    return self._download_payload(full, "executable", release.target_sha256,
+                                                  version=release.version, progress=progress, cancelled=cancelled)
         asset = release.asset(kind)
         if asset is None:
             raise UserFacingError("该版本缺少可用的更新文件。")
-        directory = None
         try:
             expected = asset.sha256
             target_asset = release.asset("portable")
@@ -238,6 +275,25 @@ class GitHubSource:
                 raise UserFacingError(
                     "该版本缺少安装后程序的 SHA256 校验信息，暂不能安全更新。"
                 )
+            if kind == "update":
+                if not release.target_sha256 or expected != release.target_sha256:
+                    raise UserFacingError("完整更新文件的校验信息不匹配。")
+                target_expected = release.target_sha256
+                kind = "executable"
+            return self._download_payload(asset, kind, target_expected, progress=progress,
+                                          version=release.version, cancelled=cancelled, expected=expected)
+        except Exception as error:
+            if isinstance(error, UserFacingError):
+                raise
+            raise UserFacingError("更新下载未完成，请检查网络或可用磁盘空间后重试。当前版本不受影响。") from None
+
+    def _download_payload(self, asset: Asset, kind: str, target_expected: str, *, version: str, progress=None,
+                          cancelled=None, expected: str | None = None) -> DownloadedUpdate:
+        directory = None
+        expected = asset.sha256 if expected is None else expected
+        if not _SHA256.fullmatch(expected):
+            raise UserFacingError("该版本缺少有效 SHA256 校验信息，暂不能安全更新。")
+        try:
             self.download_root.mkdir(parents=True, exist_ok=True)
             directory = Path(tempfile.mkdtemp(prefix="update-", dir=self.download_root))
             partial = directory / (asset.name + ".part")
@@ -268,15 +324,19 @@ class GitHubSource:
                 destination,
                 expected,
                 target_expected,
-                release.version,
+                version,
                 kind,
             )
         except Exception as error:
             if directory is not None:
-                shutil.rmtree(directory, ignore_errors=True)
+                self._discard_download(directory)
             if isinstance(error, UserFacingError):
                 raise
             raise UserFacingError("更新下载未完成，请检查网络或可用磁盘空间后重试。当前版本不受影响。") from None
+
+    def _discard_download(self, directory: Path) -> None:
+        if directory.resolve().parent == self.download_root.resolve() and directory.name.startswith("update-"):
+            shutil.rmtree(directory, ignore_errors=True)
 
 
 def checksum_for(manifest: str, filename: str) -> str:

@@ -45,6 +45,8 @@ jobs:
           $version = (Select-String -Path pyproject.toml -Pattern '^version = "(.+)"$').Matches.Groups[1].Value
           python scripts/verify_packaged_update.py "dist/WeChat-Local-Exporter-v$version.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/verify_packaged_update.py "dist/WeChat-Local-Exporter-v$version.exe" --kind executable
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Install Inno Setup
         run: choco install innosetup --yes --no-progress
@@ -61,11 +63,18 @@ jobs:
           if (-not $iscc) { throw 'Inno Setup compiler not found' }
           & $iscc "/DAppVersion=$version" packaging/installer.iss
 
+      - name: Prepare verified full and delta update assets
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path pyproject.toml -Pattern '^version = "(.+)"$').Matches.Groups[1].Value
+          python scripts/build_update_assets.py --executable "dist/WeChat-Local-Exporter-v$version.exe" --version $version --output-dir dist/update-assets --fetch-previous
+          if ($LASTEXITCODE -ne 0) { throw 'Update asset preparation failed' }
+
       - name: Verify one-click installer
         shell: pwsh
         run: |
           $version = (Select-String -Path pyproject.toml -Pattern '^version = "(.+)"$').Matches.Groups[1].Value
-          $installer = (Resolve-Path "dist/WeChat-Local-Exporter-Installer-v$version.exe").Path
+          $installer = (Resolve-Path "dist/WeChat-TXT-PDF-Exporter-Installer-v$version.exe").Path
           $builtExe = (Resolve-Path "dist/WeChat-Local-Exporter-v$version.exe").Path
           $installDir = Join-Path $env:RUNNER_TEMP 'wechat-exporter-installed'
           $process = Start-Process -FilePath $installer -ArgumentList @(
@@ -97,37 +106,32 @@ jobs:
           $version = $tag.Substring(1)
           $packageVersion = (Select-String -Path pyproject.toml -Pattern '^version = "(.+)"$').Matches.Groups[1].Value
           if ($version -ne $packageVersion) { throw "Release tag does not match package version: $tag" }
-          $installer = "dist/WeChat-Local-Exporter-Installer-v$version.exe"
+          $installer = "dist/WeChat-TXT-PDF-Exporter-Installer-v$version.exe"
           $installedExe = "dist/WeChat-Local-Exporter-v$version.exe"
           $installedHash = (Get-FileHash -LiteralPath $installedExe -Algorithm SHA256).Hash.ToLowerInvariant()
           $installerHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
           $installerSize = (Get-Item -LiteralPath $installer).Length
+          $releaseFiles = @($installer) + @(Get-ChildItem -LiteralPath dist/update-assets -File | ForEach-Object { $_.FullName })
           $notesFile = Join-Path $env:RUNNER_TEMP "release-notes-$tag.md"
           python scripts/render_release_notes.py --tag $tag --output $notesFile --installed-exe-sha256 $installedHash
           if ($LASTEXITCODE -ne 0) { throw 'Release notes generation failed' }
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag $installer --clobber
+            gh release upload $tag @releaseFiles --clobber
             if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed' }
-            $installerName = Split-Path $installer -Leaf
-            $publishedAssets = @(gh release view $tag --json assets --jq '.assets[].name')
-            foreach ($assetName in $publishedAssets) {
-              if ($assetName -and $assetName -ne $installerName) {
-                gh release delete-asset $tag $assetName --yes
-                if ($LASTEXITCODE -ne 0) { throw "Failed to remove extra release asset: $assetName" }
-              }
-            }
             gh release edit $tag --title "$tag" --notes-file $notesFile --latest
           } else {
-            gh release create $tag $installer --verify-tag --title "$tag" --notes-file $notesFile --latest
+            gh release create $tag @releaseFiles --verify-tag --title "$tag" --notes-file $notesFile --latest
           }
           if ($LASTEXITCODE -ne 0) { throw 'GitHub release publication failed' }
           $published = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$tag" | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw 'Published release could not be verified' }
           $assets = @($published.assets)
-          if ($assets.Count -ne 1 -or $assets[0].name -ne (Split-Path $installer -Leaf)) {
-            throw 'Published release must contain exactly the one-click installer'
-          }
-          if ($assets[0].size -ne $installerSize -or $assets[0].digest -ne "sha256:$installerHash") {
-            throw 'Published installer size or SHA-256 digest does not match the local build'
+          foreach ($file in $releaseFiles) {
+            $name = Split-Path $file -Leaf
+            $matches = @($assets | Where-Object { $_.name -eq $name })
+            $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($matches.Count -ne 1 -or $matches[0].size -ne (Get-Item -LiteralPath $file).Length -or $matches[0].digest -ne "sha256:$hash") {
+              throw "Published update asset does not match the verified local file: $name"
+            }
           }

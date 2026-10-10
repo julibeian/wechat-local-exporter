@@ -46,7 +46,7 @@ def test_cli_selects_exact_tag_and_builds_one_installer_link(tmp_path):
     assert "Neighbor release" not in body and "Older release" not in body
     links = re.findall(r"\]\((https://[^)]+/download/[^)]+)\)", body)
     assert [link.rsplit("/", 1)[1] for link in links] == [
-        "WeChat-Local-Exporter-Installer-v12.34.5.exe"
+        "WeChat-TXT-PDF-Exporter-Installer-v12.34.5.exe"
     ]
     assert "/releases/download/v12.34.5/" in links[0]
     assert "便携版" not in body and "SHA256SUMS" not in body
@@ -60,7 +60,7 @@ def test_existing_release_links_only_to_the_installer():
     body = render_release_notes(
         "# v1.0.0\n\nOriginal notes.\n",
         "v1.0.0",
-        ["WeChat-Local-Exporter-Installer-v1.0.0.exe"],
+        ["WeChat-TXT-PDF-Exporter-Installer-v1.0.0.exe"],
         installed_exe_sha256=INSTALLED_HASH.upper(),
     )
     assert body.count("/releases/download/") == 1
@@ -68,13 +68,14 @@ def test_existing_release_links_only_to_the_installer():
     assert f"target-sha256:{INSTALLED_HASH}" in body
 
 
-def test_release_workflow_publishes_and_verifies_only_the_installer():
+def test_release_workflow_prepares_and_verifies_all_update_resources():
     workflow = (SCRIPT.parents[1] / ".github" / "workflows" / "release.yml").read_text(
         encoding="utf-8"
     )
-    assert "gh release upload $tag $installer --clobber" in workflow
-    assert "gh release create $tag $installer" in workflow
-    assert "Published release must contain exactly the one-click installer" in workflow
+    assert "gh release upload $tag @releaseFiles --clobber" in workflow
+    assert "gh release create $tag @releaseFiles" in workflow
+    assert "build_update_assets.py" in workflow and "--fetch-previous" in workflow
+    assert "Published update asset does not match the verified local file" in workflow
     assert "SHA256SUMS" not in workflow
 
 

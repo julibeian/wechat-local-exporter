@@ -6,6 +6,7 @@ Usage: python scripts/verify_packaged_update.py dist/<portable.exe>
 from __future__ import annotations
 
 import hashlib
+import argparse
 import json
 import os
 from pathlib import Path
@@ -17,7 +18,11 @@ import time
 
 
 def main() -> None:
-    package = Path(sys.argv[1]).resolve()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("package", type=Path)
+    parser.add_argument("--kind", choices=("portable", "executable"), default="portable")
+    args = parser.parse_args()
+    package = args.package.resolve()
     temporary_root = Path("tmp").resolve()
     temporary_root.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix="packaged-update-", dir=temporary_root))
@@ -49,7 +54,7 @@ def main() -> None:
         sha256=payload_sha256,
         target_sha256=payload_sha256,
         target=str(target),
-        kind="portable",
+        kind=args.kind,
         version="1.4.0",
         parent_pid=parent.pid,
     )
@@ -73,7 +78,7 @@ def main() -> None:
         assert target.read_bytes() == payload.read_bytes()
         assert (app / "started.txt").read_text() == "new"
         assert (transaction / "previous.exe").read_bytes() == original
-        (root / "result.json").write_text(json.dumps({"status": "passed", "parent_exit_gate": True,
+        (root / "result.json").write_text(json.dumps({"status": "passed", "kind": args.kind, "parent_exit_gate": True,
             "portable_replacement": True, "restart": True, "backup": True}), encoding="utf-8")
         print(root / "result.json")
     finally:

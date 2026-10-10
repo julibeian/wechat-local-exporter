@@ -55,6 +55,8 @@ if ($selfTestReceipt.status -ne "ok") {
 }
 & $Python "scripts\verify_packaged_update.py" $portable
 if ($LASTEXITCODE -ne 0) { throw "Packaged updater smoke test failed." }
+& $Python "scripts\verify_packaged_update.py" $portable --kind executable
+if ($LASTEXITCODE -ne 0) { throw "Packaged executable updater smoke test failed." }
 
 $iscc = @(
     "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
@@ -69,7 +71,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "Inno Setup failed with exit code $LASTEXITCODE."
 }
 
-$installer = (Resolve-Path "dist\WeChat-Local-Exporter-Installer-v$version.exe").Path
+$installer = (Resolve-Path "dist\WeChat-TXT-PDF-Exporter-Installer-v$version.exe").Path
 if (-not $installAfterBuild) {
     Remove-Item -LiteralPath $portable
     Write-Host "One-click installer build complete; the desktop installation and shortcut were not updated."

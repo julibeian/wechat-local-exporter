@@ -40,9 +40,28 @@ def test_portable_replacement_and_restart(tmp_path):
     assert (Path(plan.payload).parent / "previous.exe").read_bytes() == b"old executable"
 
 
+def test_reconstructed_executable_replaces_and_restarts_installed_app(tmp_path, monkeypatch):
+    plan = make_plan(tmp_path, "executable")
+    (Path(plan.target).parent / "unins000.exe").write_bytes(b"uninstaller")
+    monkeypatch.setattr(updater, "_installed_display_version", lambda target, version: None)
+    started = []
+    apply_update(plan, launch=lambda path, *args: started.append((path, args)))
+    assert Path(plan.target).read_bytes() == b"new executable"
+    assert started == [(Path(plan.target), ())]
+    assert (Path(plan.payload).parent / "previous.exe").read_bytes() == b"old executable"
+
+
 def test_hash_failure_never_changes_old_executable(tmp_path):
     plan = make_plan(tmp_path)
     Path(plan.payload).write_bytes(b"tampered")
+    with pytest.raises(UserFacingError, match="校验"):
+        apply_update(plan, launch=lambda *args: pytest.fail("must not run"))
+    assert Path(plan.target).read_bytes() == b"old executable"
+
+
+def test_executable_with_conflicting_hashes_never_changes_installed_app(tmp_path):
+    from dataclasses import replace
+    plan = replace(make_plan(tmp_path, "executable"), target_sha256="1" * 64)
     with pytest.raises(UserFacingError, match="校验"):
         apply_update(plan, launch=lambda *args: pytest.fail("must not run"))
     assert Path(plan.target).read_bytes() == b"old executable"

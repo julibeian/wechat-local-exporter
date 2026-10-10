@@ -9,7 +9,9 @@ import time
 import tkinter as tk
 import webbrowser
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import font as tkfont, ttk
+
+from PIL import Image, ImageDraw, ImageTk
 
 from . import PROJECT_URL, __version__
 from .config import app_data_dir
@@ -71,6 +73,8 @@ class UpdateController:
         self.dialog = None
         self.download = None
         self.plan_path = None
+        self._install_requested = False
+        self._install_waiting = False
         self.status = tk.StringVar(value=manager.result.text if manager.config.get("last_update_check") else "等待检查更新")
         self.download_status = tk.StringVar(value="检查更新和下载均可选，不影响离线导出。")
         self.dialog_current = tk.StringVar(value=f"v{__version__}")
@@ -97,6 +101,21 @@ class UpdateController:
         self.github_link.bind("<Button-1>", self.open_project)
         self.github_link.bind("<Return>", self.open_project)
         self.github_link.bind("<space>", self.open_project)
+        size = max(20, tkfont.nametofont("TkDefaultFont", root=root).metrics("linespace"))
+        picture = Image.new("RGBA", (size * 3, size * 3))
+        pen = ImageDraw.Draw(picture)
+        edge, center, top, bottom = size // 2, size * 3 // 2, size // 3, size * 2
+        pen.line([(center, top), (center, bottom)], fill="#315C91", width=6)
+        pen.line([(center - edge, bottom - edge), (center, bottom), (center + edge, bottom - edge)], fill="#315C91", width=6)
+        pen.line([(edge, bottom), (edge, size * 5 // 2), (size * 3 - edge, size * 5 // 2), (size * 3 - edge, bottom)], fill="#315C91", width=6)
+        self._update_picture = ImageTk.PhotoImage(picture.resize((size, size), Image.Resampling.LANCZOS), master=root)
+        self.update_button = ttk.Button(title_row, image=self._update_picture, text="下载并更新",
+                                        compound="image", command=self.start_quick_update)
+        self._update_hint = None
+        self.update_button.bind("<Enter>", self._show_update_hint)
+        self.update_button.bind("<Leave>", self._hide_update_hint)
+        self.update_button.bind("<FocusIn>", self._show_update_hint)
+        self.update_button.bind("<FocusOut>", self._hide_update_hint)
         self.banner = ttk.Frame(outer, padding=(8, 3))
         self.banner_text = tk.StringVar()
         ttk.Label(self.banner, textvariable=self.banner_text).pack(side="left")
@@ -113,6 +132,13 @@ class UpdateController:
 
     def refresh(self):
         self.status.set(self.manager.result.text)
+        if self.manager.result.status == "available":
+            if not self.update_button.winfo_manager():
+                self.update_button.pack(side="left", padx=(8, 0))
+            self.update_button.configure(state="disabled" if self.active or self.installing or self._install_waiting else "normal")
+        else:
+            self.update_button.pack_forget()
+            self._hide_update_hint()
         if self.manager.should_show_banner():
             self.banner_text.set(f"新版本 v{self.manager.result.latest_version} 可用")
             self.banner.pack(fill="x", before=self._banner_before, pady=(2, 6))
@@ -129,7 +155,7 @@ class UpdateController:
             self.check_button.configure(state="disabled" if self.active or self.installing else "normal")
             can_download = (result.status == "available" and result.releases and self.manager.source is not None
                             and installation_kind() != "source")
-            self.download_button.configure(state="normal" if can_download and not self.active and not self.installing else "disabled",
+            self.download_button.configure(state="normal" if can_download and not self.active and not self.installing and not self._install_waiting else "disabled",
                                            text="安装已下载更新" if self.download else "下载并更新")
 
     def dismiss(self):
@@ -139,6 +165,28 @@ class UpdateController:
     def open_project(self, _event=None):
         """Open the public project page without affecting update checks."""
         return webbrowser.open(PROJECT_URL, new=2)
+
+    def _show_update_hint(self, _event=None):
+        self._hide_update_hint()
+        self._update_hint = tk.Toplevel(self.root)
+        self._update_hint.overrideredirect(True)
+        text = self.download_status.get() if self.active or self.installing or self._install_waiting else f"下载更新至 v{self.manager.result.latest_version}，完成后自动重启"
+        ttk.Label(self._update_hint, text=text, padding=(8, 5)).pack()
+        self._update_hint.geometry(f"+{self.update_button.winfo_rootx()}+{self.update_button.winfo_rooty() + self.update_button.winfo_height() + 4}")
+
+    def _hide_update_hint(self, _event=None):
+        if self._update_hint is not None:
+            self._update_hint.destroy()
+            self._update_hint = None
+
+    def start_quick_update(self):
+        if self.closed or self.active or self.installing or self._install_waiting:
+            return
+        self._hide_update_hint()
+        self._install_requested = installation_kind() != "source"
+        self.show()
+        if not self.active and self._install_requested:
+            self.start_download()
 
     def _worker(self, operation, function):
         def run():
@@ -293,10 +341,11 @@ class UpdateController:
         self.notes.configure(state="disabled")
 
     def start_download(self):
-        if self.active or self.installing:
+        if self.closed or self.active or self.installing or self._install_waiting or installation_kind() == "source":
             return
+        self._install_requested = True
         if self.download is not None:
-            self.confirm_install()
+            self.install_when_ready()
             return
         result = self.manager.result
         source = self.manager.source
@@ -305,20 +354,20 @@ class UpdateController:
             return
         self.active = True
         self.cancelled.clear()
-        self.download_status.set("正在下载更新；当前程序可继续使用。")
+        self.download_status.set("正在准备更新；优先使用差异包，完成后自动安装并重启。")
         self.refresh()
         self._worker("downloaded", lambda: source.download(release, installation_kind(),
             progress=lambda count, total: self.events.put(("progress", (count, total))), cancelled=self.cancelled))
 
-    def confirm_install(self):
+    def install_when_ready(self):
         if self.busy():
-            self.download_status.set("下载完成且 SHA256 校验通过。请等当前连接或导出结束，再点击安装。")
+            if not self._install_waiting:
+                self._install_waiting = True
+                self.download_status.set("更新已校验，等待当前连接或导出完成后自动安装并重启。")
+                self.refresh()
             return
-        if not messagebox.askyesno("准备更新", "下载完成且 SHA256 校验通过。现在退出本工具、安装并重新启动新版吗？\n微信不会因此退出。", parent=self.dialog):
-            return
-        if self.busy():
-            self.download_status.set("当前操作尚未结束，请完成后再点击安装。")
-            return
+        self._install_waiting = False
+        self._install_requested = False
         self.installing = True
         self.download_status.set("正在准备独立更新程序…")
         self.refresh()
@@ -335,6 +384,11 @@ class UpdateController:
                     if self.download is not None and self.download.version != self.manager.result.latest_version:
                         self.download = None
                     self.refresh()
+                    if self._install_requested:
+                        if self.manager.result.status == "available":
+                            self.start_download()
+                        else:
+                            self._install_requested = False
                 elif operation == "progress":
                     count, total = value
                     self.download_status.set(f"正在下载 {count / 1024**2:.1f} / {total / 1024**2:.1f} MB")
@@ -345,17 +399,20 @@ class UpdateController:
                     self.download = value
                     self.download_status.set("下载完成，SHA256 校验通过。")
                     self.refresh()
-                    if self.dialog is not None and self.dialog.winfo_exists():
-                        self.confirm_install()
+                    if self._install_requested:
+                        self.install_when_ready()
                 elif operation == "staged":
                     self.plan_path = value
                     self._ready_deadline = time.monotonic() + 45
                 elif operation == "failure":
                     self.active = self.installing = False
+                    self._install_requested = self._install_waiting = False
                     self.download_status.set(str(value))
                     self.refresh()
         except queue.Empty:
             pass
+        if self._install_requested and self.download is not None and not self.active and not self.installing:
+            self.install_when_ready()
         if self.plan_path is not None:
             directory = self.plan_path.parent
             if time.monotonic() > self._ready_deadline or (directory / "finished").is_file():
@@ -367,7 +424,7 @@ class UpdateController:
                 self.installing = False
                 self.download_status.set("独立更新程序未就绪，当前程序保持运行。可稍后重试。")
                 self.refresh()
-            elif (directory / "ready").is_file():
+            elif (directory / "ready").is_file() and not self.busy():
                 self.plan_path = None
                 self.shutdown()
                 return
@@ -375,6 +432,8 @@ class UpdateController:
 
     def close(self):
         self.closed = True
+        self._install_requested = self._install_waiting = False
+        self._hide_update_hint()
         self.cancelled.set()
         for identifier in (self._poll_id, self._check_id):
             try:
