@@ -50,6 +50,84 @@ class ProcessInfo:
     memory_kb: int
 
 
+def process_start_time(pid: int) -> int:
+    """Read the native creation time, so a reused PID cannot prove identity."""
+    ensure_windows()
+    assert _kernel32 is not None
+    _kernel32.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
+    _kernel32.OpenProcess.restype = wt.HANDLE
+    _kernel32.GetProcessTimes.argtypes = [wt.HANDLE] + [ctypes.POINTER(wt.FILETIME)] * 4
+    _kernel32.GetProcessTimes.restype = wt.BOOL
+    _kernel32.CloseHandle.argtypes = [wt.HANDLE]
+    handle = _kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        created, exited, kernel, user = (wt.FILETIME() for _ in range(4))
+        if not _kernel32.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited),
+                                        ctypes.byref(kernel), ctypes.byref(user)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return (created.dwHighDateTime << 32) | created.dwLowDateTime
+    finally:
+        _kernel32.CloseHandle(handle)
+
+
+def file_resource_users(paths: Iterable[Path]) -> set[tuple[int, int]]:
+    """Query current file users through Restart Manager; never shut them down."""
+    ensure_windows()
+    files = tuple(str(path.resolve()) for path in paths)
+    if not files:
+        return set()
+
+    class UniqueProcess(ctypes.Structure):
+        _fields_ = [("pid", wt.DWORD), ("started", wt.FILETIME)]
+
+    class ProcessResourceInfo(ctypes.Structure):
+        _fields_ = [
+            ("process", UniqueProcess), ("app", wt.WCHAR * 256),
+            ("service", wt.WCHAR * 64), ("kind", wt.DWORD), ("status", wt.DWORD),
+            ("session", wt.DWORD), ("restartable", wt.BOOL),
+        ]
+
+    api = ctypes.WinDLL("rstrtmgr", use_last_error=True)
+    api.RmStartSession.argtypes = [ctypes.POINTER(wt.DWORD), wt.DWORD, wt.LPWSTR]
+    api.RmRegisterResources.argtypes = [wt.DWORD, wt.UINT, ctypes.POINTER(wt.LPCWSTR),
+        wt.UINT, ctypes.POINTER(UniqueProcess), wt.UINT, ctypes.POINTER(wt.LPCWSTR)]
+    api.RmGetList.argtypes = [wt.DWORD, ctypes.POINTER(wt.UINT), ctypes.POINTER(wt.UINT),
+        ctypes.POINTER(ProcessResourceInfo), ctypes.POINTER(wt.DWORD)]
+    api.RmEndSession.argtypes = [wt.DWORD]
+    for name in ("RmStartSession", "RmRegisterResources", "RmGetList", "RmEndSession"):
+        getattr(api, name).restype = wt.DWORD
+    session = wt.DWORD()
+    key = ctypes.create_unicode_buffer(33)
+    result = api.RmStartSession(ctypes.byref(session), 0, key)
+    if result:
+        raise ctypes.WinError(result)
+    try:
+        filenames = (wt.LPCWSTR * len(files))(*files)
+        result = api.RmRegisterResources(session, len(files), filenames, 0, None, 0, None)
+        if result:
+            raise ctypes.WinError(result)
+        needed, count, reasons = wt.UINT(), wt.UINT(), wt.DWORD()
+        result = api.RmGetList(session, ctypes.byref(needed), ctypes.byref(count), None, ctypes.byref(reasons))
+        for _ in range(3):
+            if result == 0 and needed.value == 0:
+                return set()
+            if result not in (0, 234) or not 0 < needed.value <= 4096:
+                raise OSError(result, "无法查询数据库使用进程")
+            records = (ProcessResourceInfo * needed.value)()
+            count.value = len(records)
+            result = api.RmGetList(session, ctypes.byref(needed), ctypes.byref(count), records, ctypes.byref(reasons))
+            if result == 0:
+                if count.value > len(records):
+                    raise OSError("数据库使用进程列表长度无效")
+                return {(item.process.pid, (item.process.started.dwHighDateTime << 32)
+                         | item.process.started.dwLowDateTime) for item in records[:count.value]}
+        raise OSError("数据库使用进程发生变化，请重试")
+    finally:
+        api.RmEndSession(session)
+
+
 def ensure_windows() -> None:
     if os.name != "nt":
         raise OSError("直接读取微信仅支持 Windows")
@@ -347,23 +425,37 @@ class ProcessMemory:
 
 
 _ASCII_PATH_RE = re.compile(
-    rb"([A-Za-z]:\\[^\x00\r\n]{1,1024}?\\db_storage)(?:\\|\x00)", re.IGNORECASE
+    rb"([A-Za-z]:\\[^\x00\r\n:]{1,1024}?\\db_storage)(?:\\|\x00)", re.IGNORECASE
 )
+_ASCII_MARKER = b"db_storage"
 _WIDE_MARKER = "db_storage".encode("utf-16le")
 
 
 def _paths_from_memory_chunk(chunk: bytes) -> set[Path]:
     found: set[Path] = set()
-    for match in _ASCII_PATH_RE.finditer(chunk):
-        try:
-            value = match.group(1).decode("utf-8", errors="ignore")
-            found.add(Path(value))
-        except (OSError, ValueError):
-            continue
+    # Most of WeChat's memory is unrelated to account paths. Search the
+    # literal marker in C first, then parse only the bounded nearby bytes.
+    # Running a backtracking path regex over every full 8 MB block dominated
+    # startup time, even when the databases themselves were already cached.
+    lowered = chunk.lower()
+    start = 0
+    while True:
+        marker_index = lowered.find(_ASCII_MARKER, start)
+        if marker_index < 0:
+            break
+        window_start = max(0, marker_index - 1028)
+        window_end = min(len(chunk), marker_index + len(_ASCII_MARKER) + 1)
+        for match in _ASCII_PATH_RE.finditer(chunk[window_start:window_end]):
+            try:
+                value = match.group(1).decode("utf-8", errors="ignore")
+                found.add(Path(value))
+            except (OSError, ValueError):
+                continue
+        start = marker_index + len(_ASCII_MARKER)
 
     start = 0
     while True:
-        marker_index = chunk.find(_WIDE_MARKER, start)
+        marker_index = lowered.find(_WIDE_MARKER, start)
         if marker_index < 0:
             break
         window_start = max(0, marker_index - 4096)
@@ -374,7 +466,7 @@ def _paths_from_memory_chunk(chunk: bytes) -> set[Path]:
                 raw = raw[:-1]
             decoded = raw.decode("utf-16le", errors="ignore")
             for match in re.finditer(
-                r"([A-Za-z]:\\[^\x00\r\n]{1,1024}?\\db_storage)", decoded, re.IGNORECASE
+                r"([A-Za-z]:\\[^\x00\r\n:]{1,1024}?\\db_storage)", decoded, re.IGNORECASE
             ):
                 try:
                     found.add(Path(match.group(1)))

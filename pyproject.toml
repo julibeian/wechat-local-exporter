@@ -3,8 +3,8 @@ requires = ["setuptools>=75", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "wechat-txt-pdf-exporter"
-version = "1.6.0"
+name = "wechat-local-exporter"
+version = "1.6.1"
 description = "Local-first Windows WeChat 4.x chat and Moments archive exporter"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -36,7 +36,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-"wechat_exporter.html_assets" = ["*.html", "*.css", "*.js", "icons/*.svg", "icons/*.txt"]
+"wechat_exporter.html_assets" = ["*.html", "*.css", "*.js", "icons/*.svg", "icons/*.txt", "faces/*.png", "faces/*.json", "faces/*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -234,10 +234,20 @@ class AttachmentResolver:
         self.indexed_file_count = len(self._entries)
 
     def resolve(self, message: Message) -> Path | None:
+        return self._locate(message, verify_md5=True)
+
+    def locate_for_estimate(self, message: Message) -> Path | None:
+        """Locate by filename/length for a preview without hashing large files.
+
+        Export still uses ``resolve`` and validates the declared MD5.
+        """
+        return self._locate(message, verify_md5=False)
+
+    def _locate(self, message: Message, *, verify_md5: bool) -> Path | None:
         reference = message.attachment
         if reference is None:
             return None
-        direct = self._direct_candidate(message, reference)
+        direct = self._direct_candidate(message, reference, verify_md5=verify_md5)
         if direct is not None:
             return direct
         filename_key = urllib.parse.unquote(Path(reference.filename).name).casefold()
@@ -259,7 +269,7 @@ class AttachmentResolver:
             return None
 
         expected_md5 = _normalise_md5(reference.md5)
-        if expected_md5:
+        if expected_md5 and verify_md5:
             md5_matches = [
                 entry
                 for entry in candidates
@@ -299,6 +309,8 @@ class AttachmentResolver:
         self,
         message: Message,
         reference: AttachmentReference,
+        *,
+        verify_md5: bool = True,
     ) -> Path | None:
         filename = Path(urllib.parse.unquote(reference.filename)).name
         if not filename:
@@ -344,7 +356,7 @@ class AttachmentResolver:
                     continue
             except OSError:
                 continue
-            if expected_md5 and self._file_md5(candidate) != expected_md5:
+            if expected_md5 and verify_md5 and self._file_md5(candidate) != expected_md5:
                 continue
             return candidate
         return None

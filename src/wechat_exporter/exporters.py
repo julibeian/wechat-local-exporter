@@ -4,6 +4,7 @@ import io
 import re
 from datetime import datetime
 from pathlib import Path
+from typing import BinaryIO, TextIO
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -31,10 +32,12 @@ class TxtTranscriptWriter:
         *,
         start_timestamp: int = 0,
         end_timestamp: int = 0,
+        output_stream: TextIO | None = None,
     ):
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._stream = path.open("w", encoding="utf-8-sig", newline="\n")
+        if output_stream is None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._stream = output_stream if output_stream is not None else path.open("w", encoding="utf-8-sig", newline="\n")
         self.count = 0
         self._stream.write("微信聊天记录（本机只读导出）\n")
         self._stream.write(f"会话：{conversation.display_name}\n")
@@ -78,9 +81,11 @@ class PdfTranscriptWriter:
         *,
         start_timestamp: int = 0,
         end_timestamp: int = 0,
+        output_stream: BinaryIO | None = None,
     ):
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if output_stream is None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conversation = conversation
         self.display_name = _pdf_safe_text(conversation.display_name)
         self.start_timestamp = start_timestamp
@@ -97,7 +102,7 @@ class PdfTranscriptWriter:
         self.current_date = None
         safe_title = f"微信聊天 - {self.display_name}"
         self._canvas = canvas.Canvas(
-            str(path), pagesize=A4, pageCompression=1, title=safe_title
+            output_stream if output_stream is not None else str(path), pagesize=A4, pageCompression=1, title=safe_title
         )
         self._canvas.setTitle(safe_title)
         self._canvas.setAuthor("微信聊天本地导出工具")

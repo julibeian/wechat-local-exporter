@@ -165,7 +165,8 @@ def parse_message_text(local_type: int, raw_content: str) -> str:
         replacement = _first_xml_value(content, ("replacemsg",))
         if replacement:
             return _strip_xml(replacement)
-        stripped = _strip_xml(content)
+        visible = _first_xml_value(content, ("content", "text", "wording"))
+        stripped = _strip_xml(visible or content)
         return stripped or TYPE_LABELS[local_type]
     known = TYPE_LABELS.get(local_type)
     if known:
@@ -186,6 +187,12 @@ def extract_message_details(local_type: int, raw_content: str) -> dict[str, obje
     content = _clean_text(raw_content)
     if not content:
         return None
+
+    if local_type in (10000, 10002):
+        root = _parse_xml(content)
+        if root is not None and root.get("type") == "paymsg":
+            visible = parse_message_text(local_type, content)
+            return {"kind": "transfer_reminder", "visible_text": visible, "status_text": visible}
 
     if local_type == 48:
         root = _parse_xml(content)
@@ -676,7 +683,10 @@ def _unique_nonempty(values: Iterable[object]) -> list[str]:
 
 def _strip_xml(content: str) -> str:
     value = html.unescape(content)
+    value = re.sub(r"<!\[CDATA\[([\s\S]*?)\]\]>", r"\1", value)
+    value = re.sub(r"</?_wc_custom_link_\b[^>]*>", "", value)
     value = re.sub(r"<[^>]+>", " ", value)
+    value = re.sub(r"[ \t]+([，。！？；：、])", r"\1", value)
     return _clean_text(value)
 
 

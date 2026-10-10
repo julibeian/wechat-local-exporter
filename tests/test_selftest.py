@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import zipfile
 from pathlib import Path
 
@@ -24,6 +25,13 @@ def test_packaged_self_test_payload(tmp_path: Path) -> None:
     assert receipt["zstd"] == "ok"
     assert receipt["wechat_voice_text"] == "ok"
     assert receipt["pdf_image"] == "ok"
+    assert receipt["image_key_cache"] == ("ok" if os.name == "nt" else "skipped_non_windows")
+    assert receipt["emoticon_key_cache"] == ("ok" if os.name == "nt" else "skipped_non_windows")
+    assert receipt["runtime_resource_query"] == ("ok" if os.name == "nt" else "skipped_non_windows")
+    assert receipt["local_video_lookup"] == "ok"
+    assert receipt["export_size_estimates"] == "ok"
+    assert receipt["conversation_preview_faces"] == "ok"
+    assert receipt["conversation_preview_colors"] == ("ok" if os.name == "nt" else "skipped_non_windows")
     assert receipt["html_archive"] == "ok"
     assert receipt["moments_archive"] == "ok"
     assert receipt["moments_count"] == 1
@@ -81,9 +89,10 @@ def test_packaged_self_test_payload(tmp_path: Path) -> None:
         path.read_text(encoding="utf-8")
         for path in sorted((html_path.parent / "data").glob("messages-*.js"))
     )
-    assert "❤️" in html_chunks
-    assert '"raw_text":"第二行包含' in html_chunks
+    assert "❤️" not in html_chunks
     assert "[爱心]" in html_chunks
+    assert "[爱心]" in html_manifest["native_faces"]
+    assert (html_path.parent / html_manifest["native_faces"]["[爱心]"]).is_file()
     assert "搜索全部记录" in html_path.read_text(encoding="utf-8")
     assert (html_path.parent / "assets" / "viewer.css").is_file()
     assert (html_path.parent / "assets" / "viewer.js").is_file()

@@ -25,6 +25,11 @@ from .integrity import require_signature_integrity
 from .config import LocalConfig
 from .connection import ConnectionManager
 from .errors import user_message
+from .estimates import (
+    ChatSizeProfile, MomentsSizeProfile, build_chat_size_profile,
+    build_moments_size_profile,
+)
+from .preview_emoji import ConversationEmojiCells
 from .update import UpdateManager
 from .update_ui import UpdateController
 from .updater import installation_kind
@@ -35,7 +40,6 @@ from .models import (
     Conversation,
     ExportRequest,
     ExportResult,
-    ExportWorkload,
     HtmlExportOptions,
     JsonlPackageRequest,
 )
@@ -53,6 +57,7 @@ from .windows import read_wechat_version
 HISTORY_DIALOG_SIZE = (1380, 760)
 HISTORY_DIALOG_MIN_SIZE = (1080, 580)
 PANE_SASH_ALLOWANCE = 8
+ESTIMATE_FONT = ("SimSun", 10)
 VOICE_TEXT_GUIDE_STEPS = (
     "在微信中打开含语音消息的聊天。",
     "电脑版：右键语音气泡，选择“转文字”；手机端：长按语音气泡，选择“转文字”。",
@@ -896,11 +901,13 @@ class ExporterApp:
         self._estimate_generation = 0
         self._estimate_after_id: str | None = None
         self._estimate_cache: dict[
-            tuple[tuple[str, ...], int, int], ExportWorkload
+            tuple[tuple[str, ...], int, int], ChatSizeProfile
         ] = {}
+        self._estimate_cancelled = threading.Event()
         self._moments_estimate_generation = 0
         self._moments_estimate_after_id: str | None = None
-        self._moments_estimate_cache: dict[str, tuple[int, int]] = {}
+        self._moments_estimate_cache: dict[str, MomentsSizeProfile] = {}
+        self._moments_estimate_cancelled = threading.Event()
         self._export_started_at: float | None = None
         self._latest_export_status = ""
         self._worker_active = False
@@ -937,8 +944,16 @@ class ExporterApp:
         self.chat_file_limit_var = tk.StringVar(value="100")
         self.selection_summary_var = tk.StringVar(value="请先在上方选择对象")
         self.confirmation_var = tk.StringVar(value="选择任务后显示导出摘要")
-        self.estimate_var = tk.StringVar(value="选择会话后自动估算")
-        self.moments_estimate_var = tk.StringVar(value="单选联系人后自动估算")
+        self.estimate_var = tk.StringVar(value="预计大小：选择会话后自动计算")
+        self.package_estimate_var = tk.StringVar(value="预计大小：选择会话后自动计算")
+        self.chat_files_estimate_var = tk.StringVar(value="预计大小：选择会话后自动计算")
+        self.moments_estimate_var = tk.StringVar(value="预计大小：单选联系人后自动计算")
+        self.task_estimate_vars = {
+            "chat": self.estimate_var,
+            "jsonl_package": self.package_estimate_var,
+            "chat_files": self.chat_files_estimate_var,
+            "moments": self.moments_estimate_var,
+        }
         self.status_var = tk.StringVar(value="准备就绪")
         self.version_var = tk.StringVar(value="微信版本：检测中...")
 
@@ -1078,6 +1093,7 @@ class ExporterApp:
             lambda _event: self._selection_changed(),
         )
         self.tree.bind("<Button-1>", self._tree_heading_clicked, add="+")
+        self.conversation_emoji_cells = ConversationEmojiCells(self.tree, scrollbar)
         self.type_filter_menu = tk.Menu(self.root, tearoff=False)
         for value, label in (
             ("all", "✓  全部类型"),
@@ -1212,8 +1228,11 @@ class ExporterApp:
             chat_details_row,
             textvariable=self.estimate_var,
             foreground="#2457A7",
+            font=ESTIMATE_FONT,
+            justify="left",
         )
-        self.chat_estimate_label.pack(side="left", anchor="w")
+        self.chat_estimate_label.pack(fill="x", anchor="w")
+        self.chat_estimate_label.bind("<Configure>", self._wrap_estimate_label)
 
         self.html_options_frame = ttk.Frame(self.chat_options_frame)
         html_optional_row = ttk.Frame(self.html_options_frame)
@@ -1261,6 +1280,9 @@ class ExporterApp:
             text="联网补全表情和卡片封面",
             variable=self.package_network_var,
         ).pack(side="left")
+        self.package_estimate_label = self._build_estimate_label(
+            self.package_options_frame, self.package_estimate_var,
+        )
 
         self.chat_files_options_frame = ttk.LabelFrame(
             export,
@@ -1287,6 +1309,9 @@ class ExporterApp:
             side="left", padx=5
         )
         ttk.Label(files_row, text="MB（0=不限）").pack(side="left")
+        self.chat_files_estimate_label = self._build_estimate_label(
+            self.chat_files_options_frame, self.chat_files_estimate_var,
+        )
 
         self.moments_options_frame = ttk.LabelFrame(
             export,
@@ -1298,11 +1323,9 @@ class ExporterApp:
             self.moments_options_frame,
             text="本机已同步且仍可见的全部朋友圈。",
         ).pack(anchor="w")
-        ttk.Label(
-            self.moments_options_frame,
-            textvariable=self.moments_estimate_var,
-            foreground="#1C6B48",
-        ).pack(anchor="w", pady=(4, 0))
+        self.moments_estimate_label = self._build_estimate_label(
+            self.moments_options_frame, self.moments_estimate_var,
+        )
 
         self.output_frame = ttk.Frame(export)
         self.output_frame.grid(row=7, column=0, sticky="ew", pady=(4, 0))
@@ -1437,6 +1460,21 @@ class ExporterApp:
         # is populated only after selecting a conversation.
         line_height = tkfont.nametofont("TkDefaultFont").metrics("linespace")
         return max(1, height + line_height * 2)
+
+    def _build_estimate_label(self, parent: ttk.Frame, variable: tk.StringVar) -> ttk.Label:
+        label = ttk.Label(
+            parent, textvariable=variable, foreground="#2457A7",
+            font=ESTIMATE_FONT, justify="left",
+        )
+        label.pack(fill="x", anchor="w", pady=(5, 0))
+        label.bind("<Configure>", self._wrap_estimate_label)
+        return label
+
+    @staticmethod
+    def _wrap_estimate_label(event: tk.Event) -> None:
+        width = max(1, event.width)
+        if int(event.widget.cget("wraplength") or 0) != width:
+            event.widget.configure(wraplength=width)
 
     def _on_root_mapped(self, event: tk.Event) -> None:
         if event.widget is not self.root or self._initial_sash_done or self._closed:
@@ -1583,8 +1621,8 @@ class ExporterApp:
                 self.html_options_frame.pack_forget()
                 if not self.pdf_mode_frame.winfo_manager():
                     self.pdf_mode_frame.pack(
-                        side="left",
-                        padx=(0, 18),
+                        anchor="w",
+                        pady=(0, 4),
                         before=self.chat_estimate_label,
                     )
             elif self.chat_format_var.get() == "html":
@@ -1664,7 +1702,6 @@ class ExporterApp:
         conversations: tuple[Conversation, ...],
     ) -> str:
         target = conversations[0].display_name if len(conversations) == 1 else f"{len(conversations)} 个会话"
-        date_text = self.range_var.get()
         if task == "chat":
             format_name = {
                 "html": "HTML 离线图文聊天记录",
@@ -1681,10 +1718,10 @@ class ExporterApp:
                 media = "包含本机图片和表情" if self.html_media_var.get() else "仅保留媒体占位"
                 network = "允许联网补全" if self.html_network_var.get() else "仅使用本机资源"
                 return (
-                    f"将 {target} 在 {date_text} 内的记录导出为 {format_name}；"
+                    f"将 {target} 的记录导出为 {format_name}；"
                     f"{media}，{network}，可断网浏览。"
                 )
-            return f"将 {target} 在 {date_text} 内的记录导出为 {format_name}；一次只生成这一种格式。"
+            return f"将 {target} 的记录导出为 {format_name}；一次只生成这一种格式。"
         if task == "jsonl_package":
             video = (
                 f"包含单个不超过 {self.package_video_limit_var.get()} MB 的本机视频"
@@ -1692,10 +1729,10 @@ class ExporterApp:
                 else "不包含视频"
             )
             network = "允许联网补全表情和卡片封面" if self.package_network_var.get() else "仅使用本机媒体"
-            return f"将为 {target} 各生成一个内含 JSONL 和媒体的 ZIP（{date_text}；{video}；{network}；语音仅存微信转录）。"
+            return f"将为 {target} 各生成一个内含 JSONL 和媒体的 ZIP（{video}；{network}；语音仅存微信转录）。"
         if task == "chat_files":
             count = sum(variable.get() for variable in self.chat_file_category_vars.values())
-            return f"将批量导出 {target} 在 {date_text} 内的 {count} 类普通文件；单个上限 {self.chat_file_limit_var.get()} MB。"
+            return f"将批量导出 {target} 的 {count} 类普通文件；单个上限 {self.chat_file_limit_var.get()} MB。"
         return f"将导出 {target} 在本机已同步且仍可见的全部朋友圈，不使用聊天日期范围。"
 
     def _choose_date_range(self) -> None:
@@ -1909,7 +1946,7 @@ class ExporterApp:
                         ),
                         conversation.display_name,
                         last,
-                        conversation.summary.replace("\n", " "),
+                        _conversation_preview(conversation.summary),
                     ),
                 )
         if (
@@ -1928,6 +1965,8 @@ class ExporterApp:
         self._schedule_moments_estimate()
         self._sync_export_flow()
 
+        self.conversation_emoji_cells.refresh()
+
     def _selected_conversations(self) -> tuple[Conversation, ...]:
         return tuple(
             self._conversation_by_iid[item_id]
@@ -1938,6 +1977,8 @@ class ExporterApp:
     def _schedule_estimate(self) -> None:
         self._estimate_generation += 1
         generation = self._estimate_generation
+        self._estimate_cancelled.set()
+        self._estimate_cancelled = threading.Event()
         if self._estimate_after_id is not None:
             try:
                 self.root.after_cancel(self._estimate_after_id)
@@ -1946,23 +1987,27 @@ class ExporterApp:
             self._estimate_after_id = None
 
         task = self.task_var.get()
-        if task not in {"chat", "jsonl_package"}:
-            self.estimate_var.set("选择聊天记录或 AI 完整资料包后自动估算")
+        if task not in {"chat", "jsonl_package", "chat_files"}:
             return
+        variable = self.task_estimate_vars[task]
         conversations = self._selected_conversations()
         if not conversations:
-            self.estimate_var.set("选择会话后自动估算聊天导出时间")
+            variable.set("预计大小：选择会话后自动计算")
             return
         if any(conversation.is_self for conversation in conversations):
-            self.estimate_var.set("“我自己”不导出聊天，请查看下方朋友圈预计耗时")
+            variable.set("预计大小：请选择联系人或群聊")
             return
         if not self.service or not self.service.archive:
-            self.estimate_var.set("连接微信后自动估算聊天导出时间")
+            variable.set("预计大小：连接微信后自动计算")
             return
         try:
             start_timestamp, end_timestamp = self._parse_dates()
         except ValueError:
-            self.estimate_var.set("日期范围无效")
+            variable.set("预计大小：日期范围无效")
+            return
+        valid, reason = self._flow_options_valid(task)
+        if not valid:
+            variable.set(f"预计大小：{reason}")
             return
         key = (
             tuple(conversation.username for conversation in conversations),
@@ -1970,11 +2015,11 @@ class ExporterApp:
             end_timestamp,
         )
         cached = self._estimate_cache.get(key)
-        if cached is not None:
+        if cached is not None and (cached.images_measured or not self._estimate_needs_images()):
             self._show_estimate(cached, len(conversations))
             return
 
-        self.estimate_var.set("正在统计聊天消息、图片和表情...")
+        variable.set("预计大小：正在计算消息和本机文件大小…")
         self._estimate_after_id = self.root.after(
             120,
             lambda: self._start_estimate(
@@ -1995,22 +2040,52 @@ class ExporterApp:
         end_timestamp: int,
     ) -> None:
         self._estimate_after_id = None
-        if self._worker_active or self._closing or self.updates.installing:
+        if generation != self._estimate_generation or self._closing:
+            return
+        if self._worker_active or self.updates.installing:
+            self._estimate_after_id = self.root.after(
+                200, lambda: self._start_estimate(
+                    generation, key, conversations, start_timestamp, end_timestamp,
+                ),
+            )
             return
         archive = self.service.archive if self.service else None
         if archive is None:
             return
+        account = self.service.account
+        cancelled = self._estimate_cancelled
+
+        def check_cancelled() -> None:
+            if cancelled.is_set():
+                raise InterruptedError()
+
+        measure_images = self._estimate_needs_images()
 
         def count_workload() -> None:
             try:
-                workload = archive.export_workload(
-                    conversations,
+                last_progress_at = 0.0
+
+                def preview_progress(count: int, image_count: int) -> None:
+                    nonlocal last_progress_at
+                    now = clock.monotonic()
+                    if now - last_progress_at >= .5:
+                        self.events.put(("estimate:progress", (generation, count, image_count)))
+                        last_progress_at = now
+
+                profile = build_chat_size_profile(
+                    archive, account, conversations,
                     start_timestamp=start_timestamp,
                     end_timestamp=end_timestamp,
+                    check_cancelled=check_cancelled,
+                    progress=preview_progress,
+                    measure_images=measure_images,
                 )
+                check_cancelled()
                 self.events.put(
-                    ("estimate:ok", (generation, key, workload, len(conversations)))
+                    ("estimate:ok", (generation, key, profile, len(conversations)))
                 )
+            except InterruptedError:
+                pass
             except BaseException as error:
                 self.events.put(("estimate:error", (generation, error)))
 
@@ -2023,16 +2098,41 @@ class ExporterApp:
         self._background_threads.append(thread)
         thread.start()
 
+    def _estimate_needs_images(self) -> bool:
+        task = self.task_var.get()
+        if task == "jsonl_package":
+            return True
+        if task != "chat":
+            return False
+        chat_format = self.chat_format_var.get()
+        return ((chat_format == "html" and self.html_media_var.get())
+                or (chat_format == "pdf" and self.pdf_images_var.get()))
+
     def _show_estimate(
         self,
-        workload: ExportWorkload,
+        profile: ChatSizeProfile,
         conversation_count: int,
     ) -> None:
         task = self.task_var.get()
-        if task not in {"chat", "jsonl_package"}:
+        if task not in {"chat", "jsonl_package", "chat_files"}:
+            return
+        variable = self.task_estimate_vars[task]
+        workload = profile.workload
+        if task == "chat_files":
+            size = profile.estimate(
+                task, categories=frozenset(
+                    name for name, value in self.chat_file_category_vars.items() if value.get()
+                ), file_limit=_max_file_size_bytes(self.chat_file_limit_var.get()),
+            )
+            lower = max(1, size.item_count * .05 + size.lower_bytes / (150 * 1024**2))
+            upper = max(lower, 1 + size.item_count * .3 + size.upper_bytes / (15 * 1024**2))
+            variable.set(_compact_estimate(
+                f"约 {format_duration(lower)}–{format_duration(upper)} · "
+                f"可导出文件 {size.item_count:,} 个 · {size.text}"
+            ))
             return
         if workload.message_count <= 0:
-            self.estimate_var.set("聊天导出：当前会话和日期范围内没有消息")
+            variable.set("预计大小0B-当前会话和日期范围内没有消息")
             return
         chat_format = self.chat_format_var.get()
         is_package = task == "jsonl_package"
@@ -2048,26 +2148,33 @@ class ExporterApp:
             include_json=task == "chat" and chat_format == "json",
             include_html=task == "chat" and chat_format == "html",
         )
-        media_note = (
-            " · 媒体复制时间取决于本机缓存和视频大小"
-            if is_package
-            else ""
-            if chat_format == "html"
-            else " · 完整图片受本机缓存/网络影响"
-            if chat_format == "pdf" and self.pdf_images_var.get()
-            else " · 快速 PDF"
-            if chat_format == "pdf"
-            else " · 无媒体读取"
+        size = profile.estimate(
+            task, chat_format=chat_format,
+            include_images=is_package or (
+                chat_format == "html" and self.html_media_var.get()
+            ) or (chat_format == "pdf" and self.pdf_images_var.get()),
+            include_videos=(self.package_include_videos_var.get() if is_package
+                            else chat_format == "html" and self.html_videos_var.get()),
+            allow_network=(self.package_network_var.get() if is_package
+                           else self.html_network_var.get() if chat_format == "html"
+                           else chat_format == "pdf" and self.pdf_images_var.get()),
+            include_files=not is_package and self.html_file_binaries_var.get(),
+            include_system=is_package or self.html_system_messages_var.get(),
+            include_file_metadata=is_package or self.html_file_metadata_var.get(),
+            video_limit=(_video_size_bytes(self.package_video_limit_var.get())
+                         if is_package and self.package_include_videos_var.get() else 0),
         )
-        self.estimate_var.set(
+        variable.set(_compact_estimate(
             f"约 {format_duration(lower)}–{format_duration(upper)} · "
             f"{workload.message_count:,} 条 · 图片 {workload.image_count:,} · "
-            f"表情 {workload.emoticon_count:,}{media_note}"
-        )
+            f"表情 {workload.emoticon_count:,} · {size.text}"
+        ))
 
     def _schedule_moments_estimate(self) -> None:
         self._moments_estimate_generation += 1
         generation = self._moments_estimate_generation
+        self._moments_estimate_cancelled.set()
+        self._moments_estimate_cancelled = threading.Event()
         if self._moments_estimate_after_id is not None:
             try:
                 self.root.after_cancel(self._moments_estimate_after_id)
@@ -2076,23 +2183,22 @@ class ExporterApp:
             self._moments_estimate_after_id = None
 
         if self.task_var.get() != "moments":
-            self.moments_estimate_var.set("选择朋友圈归档后自动估算")
             return
         conversations = self._selected_conversations()
         eligible, _reason = _moments_export_eligibility(conversations)
         if not eligible:
-            self.moments_estimate_var.set("单选一个联系人或“我自己”后自动估算")
+            self.moments_estimate_var.set("预计大小：单选一个联系人或“我自己”后自动计算")
             return
         if not self.service or not self.service.archive:
-            self.moments_estimate_var.set("连接微信后自动估算朋友圈归档时间")
+            self.moments_estimate_var.set("预计大小：连接微信后自动计算")
             return
         conversation = conversations[0]
         cached = self._moments_estimate_cache.get(conversation.username)
         if cached is not None:
-            self._show_moments_estimate(*cached)
+            self._show_moments_estimate(cached)
             return
 
-        self.moments_estimate_var.set("正在统计朋友圈条目和媒体...")
+        self.moments_estimate_var.set("预计大小：正在计算朋友圈和媒体大小…")
         self._moments_estimate_after_id = self.root.after(
             120,
             lambda: self._start_moments_estimate(generation, conversation),
@@ -2104,22 +2210,39 @@ class ExporterApp:
         conversation: Conversation,
     ) -> None:
         self._moments_estimate_after_id = None
-        if self._worker_active or self._closing or self.updates.installing:
+        if generation != self._moments_estimate_generation or self._closing:
+            return
+        if self._worker_active or self.updates.installing:
+            self._moments_estimate_after_id = self.root.after(
+                200, lambda: self._start_moments_estimate(generation, conversation),
+            )
             return
         archive = self.service.archive if self.service else None
         if archive is None:
             return
 
+        account = self.service.account
+        cancelled = self._moments_estimate_cancelled
+
+        def check_cancelled() -> None:
+            if cancelled.is_set():
+                raise InterruptedError()
+
         def count_moments() -> None:
             try:
                 moments = archive.contact_moments(conversation)
-                media_count = sum(len(moment.media) for moment in moments)
+                profile = build_moments_size_profile(
+                    moments, account, check_cancelled=check_cancelled,
+                )
+                check_cancelled()
                 self.events.put(
                     (
                         "moments-estimate:ok",
-                        (generation, conversation.username, len(moments), media_count),
+                        (generation, conversation.username, profile),
                     )
                 )
+            except InterruptedError:
+                pass
             except BaseException as error:
                 self.events.put(("moments-estimate:error", (generation, error)))
 
@@ -2132,20 +2255,25 @@ class ExporterApp:
         self._background_threads.append(thread)
         thread.start()
 
-    def _show_moments_estimate(self, post_count: int, media_count: int) -> None:
+    def _show_moments_estimate(self, profile: MomentsSizeProfile) -> None:
+        post_count, media_count = profile.post_count, profile.media_count
         if post_count <= 0:
-            self.moments_estimate_var.set("朋友圈归档：本机暂未找到该联系人的动态")
+            self.moments_estimate_var.set("预计大小0B-本机暂未找到该联系人的动态")
             return
         lower, upper = estimate_moments_export_seconds(
             post_count=post_count,
             media_count=media_count,
         )
-        self.moments_estimate_var.set(
+        self.moments_estimate_var.set(_compact_estimate(
             f"约 {format_duration(lower)}–{format_duration(upper)} · "
-            f"{post_count:,} 条 · 媒体 {media_count:,} 个 · 受本机缓存/CDN影响"
-        )
+            f"{post_count:,} 条 · 媒体 {media_count:,} 个 · {profile.size.text}"
+        ))
 
     def _new_export_operation(self) -> tuple[int, threading.Event]:
+        self._estimate_cancelled.set()
+        self._moments_estimate_cancelled.set()
+        self._estimate_generation += 1
+        self._moments_estimate_generation += 1
         self.completion_var.set("")
         self.completion_icon.itemconfigure("all", state="hidden")
         self.open_result_button.configure(state="disabled")
@@ -2500,6 +2628,11 @@ class ExporterApp:
                     self._worker_active = False
                     self._active_worker_name = None
                 if kind.startswith("export:") and kind != "export:progress":
+                    self._estimate_cache.clear()
+                    self._moments_estimate_cache.clear()
+                    if not self._closing:
+                        self._schedule_estimate()
+                        self._schedule_moments_estimate()
                     self.cancel_export_button.configure(
                         state="disabled",
                         text="取消导出",
@@ -2514,26 +2647,37 @@ class ExporterApp:
                     if self._export_started_at is None:
                         self.status_var.set(str(message))
                     self.progress["value"] = max(0, min(100, float(fraction) * 100))
-                elif kind == "estimate:ok":
-                    generation, key, workload, conversation_count = payload
+                elif kind == "estimate:progress":
+                    generation, count, image_count = payload
                     if int(generation) == self._estimate_generation:
-                        self._estimate_cache[key] = workload
-                        self._show_estimate(workload, int(conversation_count))
+                        variable = self.task_estimate_vars.get(self.task_var.get())
+                        if variable is not None:
+                            variable.set(f"预计大小：正在核算本机资源…已读取 {count:,} 条（图片 {image_count:,} 张）")
+                elif kind == "estimate:ok":
+                    generation, key, profile, conversation_count = payload
+                    if int(generation) == self._estimate_generation:
+                        self._estimate_cache[key] = profile
+                        while len(self._estimate_cache) > 8:
+                            self._estimate_cache.pop(next(iter(self._estimate_cache)))
+                        self._show_estimate(profile, int(conversation_count))
                 elif kind == "estimate:error":
                     generation, _error = payload
                     if int(generation) == self._estimate_generation:
-                        self.estimate_var.set("聊天导出暂时无法估算；仍可正常导出")
+                        variable = self.task_estimate_vars.get(self.task_var.get())
+                        if variable is not None:
+                            variable.set("预计大小暂时无法计算；仍可正常导出")
                 elif kind == "moments-estimate:ok":
-                    generation, username, post_count, media_count = payload
+                    generation, username, profile = payload
                     if int(generation) == self._moments_estimate_generation:
-                        counts = (int(post_count), int(media_count))
-                        self._moments_estimate_cache[str(username)] = counts
-                        self._show_moments_estimate(*counts)
+                        self._moments_estimate_cache[str(username)] = profile
+                        while len(self._moments_estimate_cache) > 8:
+                            self._moments_estimate_cache.pop(next(iter(self._moments_estimate_cache)))
+                        self._show_moments_estimate(profile)
                 elif kind == "moments-estimate:error":
                     generation, _error = payload
                     if int(generation) == self._moments_estimate_generation:
                         self.moments_estimate_var.set(
-                            "朋友圈归档暂时无法估算；仍可正常导出"
+                            "预计大小暂时无法计算；仍可正常导出"
                         )
                 elif kind == "detect:ok":
                     version, executable = payload
@@ -2795,6 +2939,8 @@ class ExporterApp:
             self.status_var.set("正在交接给更新程序，请稍候…")
             return
         self._closing = True
+        self._estimate_cancelled.set()
+        self._moments_estimate_cancelled.set()
         self.updates.close()
         self.connect_button.configure(state="disabled")
         self.export_button.configure(state="disabled")
@@ -2803,6 +2949,11 @@ class ExporterApp:
             self.status_var.set("正在等待当前操作结束并清理临时数据库…")
             self.root.after(150, lambda: self._on_close(for_update=for_update))
             return
+        if self._estimate_after_id is not None:
+            try:
+                self.root.after_cancel(self._estimate_after_id)
+            except tk.TclError:
+                pass
         if self._moments_estimate_after_id is not None:
             try:
                 self.root.after_cancel(self._moments_estimate_after_id)
@@ -2917,6 +3068,14 @@ def _group_conversations(
         )
         result.append((section, values))
     return result
+
+
+def _conversation_preview(summary: str) -> str:
+    return summary.replace("\r", " ").replace("\n", " ")
+
+
+def _compact_estimate(text: str) -> str:
+    return text.replace(" ", "").replace("·", "-").replace("–", "-")
 
 
 def _conversation_matches_filters(

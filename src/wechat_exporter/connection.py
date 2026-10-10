@@ -10,6 +10,7 @@ from .database_cache import AccountDatabaseCache
 from .errors import UserFacingError
 from .key_capture import capture_keys_during_wechat_start, prepare_key_capture
 from .models import AccountLocation
+from .runtime_account import confirm_runtime_account
 from .service import ExporterService, RestartRequired
 from .windows import (account_from_path, discover_db_paths_from_process,
                       find_weixin_executable, list_wechat_processes, request_wechat_exit)
@@ -66,7 +67,8 @@ class ConnectionManager:
             if not allow_restart:
                 if progress:
                     progress("正在确认当前微信进程使用的账号...", 0.05)
-                if not list_wechat_processes():
+                processes = list_wechat_processes()
+                if not processes:
                     cached_account = self._last_confirmed_account()
                     if cached_account is None:
                         raise RestartRequired("微信尚未运行且没有可用账号缓存，需要启动微信后连接。")
@@ -77,7 +79,10 @@ class ConnectionManager:
                         last_db_path=str(cached_account.db_dir.resolve()),
                     )
                     return service
-                running = resolve_running_account()
+                cached_account = self._last_confirmed_account()
+                confirmed_pid = confirm_runtime_account(cached_account, processes) if cached_account else None
+                running = (RunningAccount(confirmed_pid, account_from_path(cached_account.db_dir, "微信进程"))
+                           if confirmed_pid is not None else resolve_running_account())
                 if running is None:
                     raise UserFacingError("尚未确认当前登录账号。请完成微信登录；若同时登录了多个账号，请只保留需要导出的账号后重试。")
                 service = ExporterService(running.account, process_id=running.pid)
@@ -143,5 +148,8 @@ class ConnectionManager:
 
     @staticmethod
     def _verify_current(running: RunningAccount) -> None:
+        processes = [p for p in list_wechat_processes() if p.pid == running.pid]
+        if confirm_runtime_account(running.account, processes) == running.pid:
+            return
         if resolve_running_account(running.pid) != running:
             raise UserFacingError("连接期间微信账号发生变化或已退出，请重新连接。")

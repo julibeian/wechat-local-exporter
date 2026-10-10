@@ -1,0 +1,8 @@
+GitHub Invertocat Black
+Source: GitHub Logos/SVG/GitHub_Invertocat_Black.svg
+Official download: brand.github.com/GitHub_Logos.zip
+Usage: brand.github.com/foundations/logo
+
+GitHub and the Invertocat design are trademarks of GitHub, Inc.
+This unmodified official SVG links to the project's GitHub repository.
+The Feather MIT license in LICENSE.txt does not apply to github.svg.

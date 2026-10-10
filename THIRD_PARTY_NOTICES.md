@@ -31,3 +31,18 @@ description and public-domain reference implementation by Bob Jenkins:
 
 - https://burtleburtle.net/bob/rand/isaacafa.html
 - https://burtleburtle.net/bob/c/isaac64.c
+
+The offline HTML viewer's `icons/github.svg` is the unmodified black Invertocat
+SVG from GitHub's official logo download. It links to this project's GitHub
+repository. GitHub and the Invertocat design are trademarks of GitHub, Inc.;
+this asset is not covered by the MIT license for the other Feather icons.
+
+- https://brand.github.com/foundations/logo
+- https://brand.github.com/GitHub_Logos.zip
+
+The native face PNGs in `wechat_exporter/html_assets/faces` are unchanged emoji
+resources extracted from the local Windows Weixin 4.1.15.51 client. Copyright
+Tencent, all rights reserved. The project's MIT license does not cover this
+artwork. The resource folder's `NOTICE.txt` and `provenance.json` document the
+source and original image hashes. Offline exports copy that notice with the
+faces used by the conversation.

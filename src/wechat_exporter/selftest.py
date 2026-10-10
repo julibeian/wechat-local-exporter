@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import json
 import io
+import hashlib
+import os
 import shutil
+import struct
 import zipfile
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import zstandard
 from PIL import Image
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from .chat_html_archive import (
     CHAT_HTML_SCHEMA,
@@ -16,9 +23,12 @@ from .chat_html_archive import (
 )
 from .content import decode_database_content, parse_message_text
 from .exporters import PdfTranscriptWriter, TxtTranscriptWriter
+from .estimates import build_chat_size_profile
 from .json_exporter import JsonTextTranscriptWriter
 from .jsonl_exporter import JsonlTranscriptWriter
-from .jsonl_package import export_conversation_jsonl_package
+from .jsonl_package import ChatVideoLocator, export_conversation_jsonl_package
+from .database_cache import AccountDatabaseCache
+from .media import MediaResolver, derive_emoticon_key, extract_media_reference
 from .integrity import verify_signature
 from .models import (
     Conversation,
@@ -33,11 +43,104 @@ from .models import (
     PdfImage,
 )
 from .moments_archive import MomentsArchiveWriter
-from .windows import discover_accounts, find_weixin_executable
+from .windows import discover_accounts, file_resource_users, find_weixin_executable, process_start_time
 
 
 _SELF_TEST_CONVERSATION_ID = "selftest_contact"
 _SELF_TEST_HTML_DIRECTORY = "packaged-self-test-chat-html"
+
+
+def _verify_local_media_pipeline(output_dir: Path, message: Message, data: bytes) -> tuple[str, str]:
+    """Use owned synthetic cache files, including real Windows DPAPI in the EXE."""
+    account = AccountLocation(output_dir / "synthetic-account", "self", "self-test")
+    keys = (b"0123456789abcdef", 123)  # Public synthetic fixture, never an account secret.
+    image_path = (
+        account.account_dir / "msg/attach"
+        / hashlib.md5(message.conversation_id.encode()).hexdigest()
+        / message.datetime.strftime("%Y-%m") / "Img" / f"{message.media.md5}.dat"
+    )
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    padder = padding.PKCS7(128).padder()
+    padded = padder.update(data[:32]) + padder.finalize()
+    cipher = Cipher(algorithms.AES(keys[0]), modes.ECB()).encryptor()
+    image_path.write_bytes(
+        b"\x07\x08\x56\x32\x08\x07" + struct.pack("<II", 32, 8) + b"\x01"
+        + cipher.update(padded) + cipher.finalize() + data[32:-8]
+        + bytes(value ^ keys[1] for value in data[-8:])
+    )
+    image_cache_status = "skipped_non_windows"
+    sticker_cache_status = "skipped_non_windows"
+    if os.name == "nt":
+        cache = AccountDatabaseCache(account, root=output_dir / "synthetic-media-cache")
+        if not cache.save_image_keys("self", keys):
+            raise RuntimeError("合成图片密钥加密保存自检失败")
+        resolved = MediaResolver(account, "self", image_key_cache=cache).resolve(message)
+        if resolved is None or resolved.data != data:
+            raise RuntimeError("不依赖微信进程的图片解密自检失败")
+        image_cache_status = "ok"
+        sticker_stream = io.BytesIO()
+        Image.new("RGB", (32, 24), "red").save(sticker_stream, format="GIF", save_all=True,
+            append_images=[Image.new("RGB", (32, 24), "green")], duration=100, loop=0)
+        sticker_data = sticker_stream.getvalue()
+        sticker_md5 = hashlib.md5(sticker_data).hexdigest()
+        sticker_key = derive_emoticon_key(123456, "self")
+        sticker_path = account.account_dir / "business/emoticon/Persist" / sticker_md5[:2] / sticker_md5
+        sticker_path.parent.mkdir(parents=True, exist_ok=True)
+        padder = padding.PKCS7(128).padder()
+        padded = padder.update(sticker_data) + padder.finalize()
+        cipher = Cipher(algorithms.AES(sticker_key), modes.CBC(sticker_key)).encryptor()
+        sticker_path.write_bytes(cipher.update(padded) + cipher.finalize())
+        if not cache.save_emoticon_key("self", sticker_key):
+            raise RuntimeError("合成表情密钥加密保存自检失败")
+        sticker_message = replace(message, message_type=47, content="[动画表情]",
+            media=MediaReference("emoticon", md5=sticker_md5))
+        sticker_resolved = MediaResolver(account, "self", image_key_cache=cache).resolve(sticker_message)
+        if sticker_resolved is None or sticker_resolved.data != sticker_data or not sticker_resolved.is_animated:
+            raise RuntimeError("不依赖微信进程的动画表情解密自检失败")
+        sticker_cache_status = "ok"
+
+    local_md5, content_md5 = "b" * 32, "c" * 32
+    video_bytes = b"\x00\x00\x00\x18ftypisom" + bytes(64)
+    video_path = account.account_dir / "msg/video" / message.datetime.strftime("%Y-%m") / f"{local_md5}.mp4"
+    video_path.parent.mkdir(parents=True, exist_ok=True)
+    video_path.write_bytes(video_bytes)
+    reference = extract_media_reference(
+        43, f'<msg><videomsg md5="{content_md5}" length="{len(video_bytes)}"/></msg>',
+        b"\x08\x3d\x10\x01\x22\x22" + local_md5.encode(),
+    )
+    video_message = replace(message, message_type=43, content="[视频]", media=reference)
+    if ChatVideoLocator(account).find(video_message) != video_path:
+        raise RuntimeError("视频本地缓存标识匹配自检失败")
+    profile = build_chat_size_profile(
+        SimpleNamespace(iter_messages=lambda *args, **kwargs: iter((message, video_message))),
+        account, (Conversation(message.conversation_id, "成品大小估算自检"),),
+    )
+    without_video = profile.estimate("jsonl_package", include_videos=False)
+    with_video = profile.estimate("jsonl_package", include_videos=True)
+    if not len(video_bytes) <= with_video.byte_count - without_video.byte_count <= len(video_bytes) + 300:
+        raise RuntimeError("导出大小随视频选项更新的成品自检失败")
+    from .gui import _conversation_preview
+    if _conversation_preview("收到[玫瑰]【花】[OK]") != "收到[玫瑰]【花】[OK]":
+        raise RuntimeError("最近消息表情显示成品自检失败")
+    if os.name == "nt":
+        from .preview_emoji import render_native_face
+        import tkinter as tk
+        from PIL import ImageTk
+        preview_root = tk.Tk()
+        preview_root.withdraw()
+        try:
+            for face in ("[玫瑰]", "[西瓜]", "[吃瓜]", "[握手]", "[咖啡]", "[OK]"):
+                bitmap = render_native_face(face, 22)
+                if bitmap is None or not any(a > 100 and max(r, g, b) - min(r, g, b) > 35
+                                             for r, g, b, a in (bitmap.getpixel((x, y))
+                                                 for y in range(bitmap.height) for x in range(bitmap.width))):
+                    raise RuntimeError("最近消息彩色表情成品自检失败")
+                photo = ImageTk.PhotoImage(bitmap, master=preview_root)
+                if (photo.width(), photo.height()) != bitmap.size:
+                    raise RuntimeError("最近消息彩色位图与 Tk 桥接成品自检失败")
+        finally:
+            preview_root.destroy()
+    return image_cache_status, sticker_cache_status
 
 
 def _prepare_self_test_html_root(output_dir: Path) -> Path:
@@ -81,6 +184,15 @@ def run_packaged_self_test(
         raise RuntimeError("zstd 压缩消息自检失败")
     if not verify_signature():
         raise RuntimeError("个人签名完整性自检失败")
+
+    runtime_query_status = "skipped_non_windows"
+    if os.name == "nt":
+        resource = output_dir / "self-test-resource.bin"
+        resource.write_bytes(b"synthetic startup resource ownership probe")
+        with resource.open("rb"):
+            if (os.getpid(), process_start_time(os.getpid())) not in file_resource_users((resource,)):
+                raise RuntimeError("运行中账号快速核验所需的系统查询自检失败")
+        runtime_query_status = "ok"
 
     environment_status = "skipped"
     if check_environment:
@@ -139,7 +251,7 @@ def run_packaged_self_test(
             is_outgoing=True,
             content="[图片]",
             conversation_id=conversation.username,
-            media=MediaReference("image", md5="synthetic"),
+            media=MediaReference("image", md5="a" * 32),
         ),
     )
     image_stream = io.BytesIO()
@@ -151,6 +263,7 @@ def run_packaged_self_test(
         height=180,
         source="内置合成图片",
     )
+    image_cache_status, sticker_cache_status = _verify_local_media_pipeline(output_dir, messages[3], synthetic_image.data)
     txt_path = output_dir / "packaged-self-test.txt"
     pdf_path = output_dir / "packaged-self-test.pdf"
     json_path = output_dir / "packaged-self-test.json"
@@ -213,8 +326,8 @@ def run_packaged_self_test(
         html_archive.status != "complete"
         or html_archive.message_count != len(messages)
         or not all(path.is_file() for path in required_html_files)
-        or "❤️" not in html_chunk_text
         or "[爱心]" not in html_chunk_text
+        or not any((html_archive.root / "assets" / "faces").glob("*.png"))
     ):
         raise RuntimeError("聊天离线 HTML 自检失败")
 
@@ -273,6 +386,13 @@ def run_packaged_self_test(
                 "zstd": "ok",
                 "wechat_voice_text": "ok",
                 "pdf_image": "ok",
+                "image_key_cache": image_cache_status,
+                "emoticon_key_cache": sticker_cache_status,
+                "runtime_resource_query": runtime_query_status,
+                "local_video_lookup": "ok",
+                "export_size_estimates": "ok",
+                "conversation_preview_faces": "ok",
+                "conversation_preview_colors": "ok" if os.name == "nt" else "skipped_non_windows",
                 "html_archive": "ok",
                 "moments_archive": "ok",
                 "moments_count": moments_count,

@@ -27,13 +27,13 @@ jobs:
         run: python -m pytest
 
       - name: Build application executable
-        run: python -m PyInstaller --noconfirm --clean packaging/WeChat-TXT-PDF-Exporter.spec
+        run: python -m PyInstaller --noconfirm --clean packaging/WeChat-Local-Exporter.spec
 
       - name: Run packaged self-test
         shell: pwsh
         run: |
           $version = (Select-String -Path pyproject.toml -Pattern '^version = "(.+)"$').Matches.Groups[1].Value
-          $exe = Join-Path $PWD "dist/WeChat-TXT-PDF-Exporter-v$version.exe"
+          $exe = Join-Path $PWD "dist/WeChat-Local-Exporter-v$version.exe"
           $process = Start-Process -FilePath $exe -ArgumentList @('--self-test-offline', (Join-Path $PWD 'tmp/package-self-test')) -Wait -PassThru -WindowStyle Hidden
           if ($process.ExitCode -ne 0) { exit $process.ExitCode }
           $receipt = Get-Content 'tmp/package-self-test/self-test-result.json' -Raw | ConvertFrom-Json
@@ -43,7 +43,7 @@ jobs:
         shell: pwsh
         run: |
           $version = (Select-String -Path pyproject.toml -Pattern '^version = "(.+)"$').Matches.Groups[1].Value
-          python scripts/verify_packaged_update.py "dist/WeChat-TXT-PDF-Exporter-v$version.exe"
+          python scripts/verify_packaged_update.py "dist/WeChat-Local-Exporter-v$version.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Install Inno Setup
@@ -65,8 +65,8 @@ jobs:
         shell: pwsh
         run: |
           $version = (Select-String -Path pyproject.toml -Pattern '^version = "(.+)"$').Matches.Groups[1].Value
-          $installer = (Resolve-Path "dist/WeChat-TXT-PDF-Exporter-Installer-v$version.exe").Path
-          $builtExe = (Resolve-Path "dist/WeChat-TXT-PDF-Exporter-v$version.exe").Path
+          $installer = (Resolve-Path "dist/WeChat-Local-Exporter-Installer-v$version.exe").Path
+          $builtExe = (Resolve-Path "dist/WeChat-Local-Exporter-v$version.exe").Path
           $installDir = Join-Path $env:RUNNER_TEMP 'wechat-exporter-installed'
           $process = Start-Process -FilePath $installer -ArgumentList @(
             '/VERYSILENT', '/SUPPRESSMSGBOXES', '/SP-', '/NORESTART', '/NOICONS',
@@ -97,8 +97,8 @@ jobs:
           $version = $tag.Substring(1)
           $packageVersion = (Select-String -Path pyproject.toml -Pattern '^version = "(.+)"$').Matches.Groups[1].Value
           if ($version -ne $packageVersion) { throw "Release tag does not match package version: $tag" }
-          $installer = "dist/WeChat-TXT-PDF-Exporter-Installer-v$version.exe"
-          $installedExe = "dist/WeChat-TXT-PDF-Exporter-v$version.exe"
+          $installer = "dist/WeChat-Local-Exporter-Installer-v$version.exe"
+          $installedExe = "dist/WeChat-Local-Exporter-v$version.exe"
           $installedHash = (Get-FileHash -LiteralPath $installedExe -Algorithm SHA256).Hash.ToLowerInvariant()
           $installerHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
           $installerSize = (Get-Item -LiteralPath $installer).Length

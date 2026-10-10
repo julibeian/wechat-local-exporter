@@ -30,7 +30,7 @@ def release_json(
         "https://github.com/julibeian/wechat-local-exporter/"
         f"releases/download/v{version}/"
     )
-    name = f"WeChat-TXT-PDF-Exporter-Installer-v{version}.exe"
+    name = f"WeChat-Local-Exporter-Installer-v{version}.exe"
     url = prefix + name
     target_hash = hashlib.sha256(installed_payload).hexdigest()
     entry = {

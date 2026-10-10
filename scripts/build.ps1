@@ -31,13 +31,13 @@ if (-not (Test-Path -LiteralPath $Python)) {
 if ($LASTEXITCODE -ne 0) {
     throw "Tests failed with exit code $LASTEXITCODE."
 }
-& $Python -m PyInstaller --noconfirm --clean "packaging\WeChat-TXT-PDF-Exporter.spec"
+& $Python -m PyInstaller --noconfirm --clean "packaging\WeChat-Local-Exporter.spec"
 if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller failed with exit code $LASTEXITCODE."
 }
 
 $version = (Select-String -Path "pyproject.toml" -Pattern '^version = "(.+)"$').Matches.Groups[1].Value
-$portable = (Resolve-Path "dist\WeChat-TXT-PDF-Exporter-v$version.exe").Path
+$portable = (Resolve-Path "dist\WeChat-Local-Exporter-v$version.exe").Path
 $packagedHash = (Get-FileHash -LiteralPath $portable -Algorithm SHA256).Hash
 $selfTestDir = Join-Path $PWD "tmp\package-self-test"
 $process = Start-Process `
@@ -69,7 +69,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "Inno Setup failed with exit code $LASTEXITCODE."
 }
 
-$installer = (Resolve-Path "dist\WeChat-TXT-PDF-Exporter-Installer-v$version.exe").Path
+$installer = (Resolve-Path "dist\WeChat-Local-Exporter-Installer-v$version.exe").Path
 if (-not $installAfterBuild) {
     Remove-Item -LiteralPath $portable
     Write-Host "One-click installer build complete; the desktop installation and shortcut were not updated."

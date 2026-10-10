@@ -1,12 +1,12 @@
 #ifndef AppVersion
-  #define AppVersion "1.6.0"
+  #define AppVersion "1.6.1"
 #endif
 
 #define AppName "微信聊天本地导出工具"
 #define AppPublisher "julibeian"
 #define AppURL "https://github.com/julibeian/wechat-local-exporter"
 #define AppExeName "WeChat-TXT-PDF-Exporter.exe"
-#define ReleaseExeName "WeChat-TXT-PDF-Exporter-v" + AppVersion + ".exe"
+#define ReleaseExeName "WeChat-Local-Exporter-v" + AppVersion + ".exe"
 #define InstalledExeSHA256 GetSHA256OfFile("..\dist\" + ReleaseExeName)
 #define DesktopShortcutName "微信聊天本地导出工具"
 
@@ -23,7 +23,7 @@ DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=..\dist
-OutputBaseFilename=WeChat-TXT-PDF-Exporter-Installer-v{#AppVersion}
+OutputBaseFilename=WeChat-Local-Exporter-Installer-v{#AppVersion}
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern

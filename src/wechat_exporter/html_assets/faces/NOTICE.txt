@@ -1,0 +1,10 @@
+WeChat / Weixin native face artwork
+Copyright Tencent. All rights reserved.
+
+These PNG files are the unchanged embedded emoji resources of the locally
+installed Windows Weixin 4.1.15.51. Label mappings come from the same client.
+They are used solely to render WeChat face labels faithfully in local previews
+and offline chat archives. The project's MIT license does not cover this artwork.
+
+Extraction: scripts/extract_wechat_native_faces.py
+provenance.json records the source DLL and individual PNG SHA-256 hashes.

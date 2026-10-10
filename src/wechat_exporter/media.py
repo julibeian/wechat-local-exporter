@@ -11,6 +11,8 @@ import struct
 import subprocess
 import tempfile
 import threading
+import time
+from itertools import chain
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -22,6 +24,7 @@ from xml.etree import ElementTree
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from PIL import Image
 
+from .database_cache import AccountDatabaseCache
 from .models import (
     AccountLocation,
     MediaReference,
@@ -114,6 +117,7 @@ def extract_media_reference(
             size=_optional_int(attributes.get("length")),
             duration_seconds=_optional_float(attributes.get("playlength")),
             filename=attributes.get("filename", ""),
+            local_md5=_first_md5(packed_info),
         )
     if message_type != 47:
         return None
@@ -127,6 +131,7 @@ def extract_media_reference(
         cdn_url=attributes.get("cdnurl", ""),
         encrypted_url=attributes.get("encrypturl", ""),
         thumbnail_url=attributes.get("thumburl", ""),
+        local_md5=attributes.get("androidmd5", "").lower(),
     )
 
 
@@ -136,13 +141,50 @@ def derive_image_keys(cfg_dword: int, wxid: str) -> tuple[bytes, int]:
     return aes_key.encode("ascii"), cfg_dword & 0xFF
 
 
+def derive_emoticon_key(uin: int, wxid: str) -> bytes:
+    """The sticker cache uses the raw MD5 digest, separately from image keys."""
+    return hashlib.md5(f"{uin}{wxid}EMOTICON".encode("utf-8")).digest()
+
+
+def decrypt_emoticon_cache(data: bytes, key: bytes) -> bytes:
+    if len(key) != 16 or not data or len(data) % 16:
+        raise ValueError("本机表情密钥或缓存长度无效")
+    decryptor = Cipher(algorithms.AES(key), modes.CBC(key)).decryptor()
+    result = _pkcs7_unpad(decryptor.update(data) + decryptor.finalize())
+    if not _image_format(result):
+        raise ValueError("本机表情解密结果不是受支持的图像")
+    return result
+
+
+def discover_account_emoticon_key(
+    wxid: str, probe: bytes, processes: Iterable[ProcessInfo] | None = None,
+) -> bytes | None:
+    for process in processes if processes is not None else list_wechat_processes():
+        try:
+            candidates = _read_cfg_candidates(process.pid, full_uin=True)
+        except (OSError, PermissionError, ValueError):
+            continue
+        for uin, remote_wxid in candidates:
+            if remote_wxid != wxid:
+                continue
+            key = derive_emoticon_key(uin, wxid)
+            try:
+                decrypt_emoticon_cache(probe, key)
+                return key
+            except ValueError:
+                continue
+    return None
+
+
 def discover_account_image_keys(
     account_dir: Path,
     wxid: str,
     processes: Iterable[ProcessInfo] | None = None,
+    *,
+    probe: bytes | None = None,
 ) -> tuple[bytes, int] | None:
     """Read cfgDword from the logged-in process and validate the derived key."""
-    probe = _find_v2_probe(account_dir)
+    probe = probe if probe is not None else _find_v2_probe(account_dir)
     for process in processes if processes is not None else list_wechat_processes():
         try:
             candidates = _read_cfg_candidates(process.pid)
@@ -166,16 +208,21 @@ class MediaResolver:
         wxid: str,
         *,
         image_keys: tuple[bytes, int] | None = None,
+        emoticon_key: bytes | None = None,
         download: Callable[[str], bytes] | None = None,
         ffmpeg_executable: str | None = None,
         allow_network: bool = True,
         cache_message_results: bool = True,
+        image_key_cache: AccountDatabaseCache | None = None,
     ):
         self.account = account
         self.wxid = wxid
         self.stats = MediaStats()
         self._image_keys = image_keys
-        self._image_keys_checked = image_keys is not None
+        self._emoticon_key = emoticon_key
+        self._image_key_cache = image_key_cache or AccountDatabaseCache(account)
+        self._image_key_attempt_at = float("-inf")
+        self._emoticon_key_attempt_at = float("-inf")
         self._download_override = download
         self.allow_network = allow_network
         # PDF and JSONL exports may resolve the same image concurrently, so
@@ -196,6 +243,7 @@ class MediaResolver:
         self._cache_condition = threading.Condition()
         self._stats_lock = threading.Lock()
         self._image_key_lock = threading.Lock()
+        self._emoticon_key_lock = threading.Lock()
         self._attach_index_lock = threading.Lock()
         self._ffmpeg_lock = threading.Lock()
 
@@ -209,6 +257,7 @@ class MediaResolver:
             message.conversation_id,
             reference.kind,
             reference.md5,
+            reference.local_md5,
             reference.aes_key,
             reference.cdn_url,
             reference.encrypted_url,
@@ -246,7 +295,8 @@ class MediaResolver:
                     self._cache_condition.notify_all()
                 raise
             with self._cache_condition:
-                self._cache[cache_key] = result
+                if result is not None:
+                    self._cache[cache_key] = result
                 self._inflight.discard(cache_key)
                 self._cache_condition.notify_all()
 
@@ -392,54 +442,67 @@ class MediaResolver:
     def _resolve_local_image(
         self, message: Message, reference: MediaReference
     ) -> PdfImage | None:
-        found = self._find_image_dat(message, reference.md5)
-        if found is None:
+        candidates = self._find_image_dats(message, reference.md5)
+        if not candidates:
             self._add_issue("部分图片尚未缓存在本机")
             return None
-        dat_path, is_thumbnail = found
-        try:
-            encrypted = dat_path.read_bytes()
-        except OSError:
-            self._add_issue("部分本机图片文件无法读取")
-            return None
-        try:
-            if _image_format(encrypted):
-                image_data = encrypted
-            else:
-                keys = self._account_image_keys()
-                if encrypted.startswith(_V2_MAGIC) and keys is None:
-                    self._add_issue("未能从当前微信登录进程读取图片密钥")
-                    return None
-                aes_key, xor_key = keys or (b"", 0)
-                image_data = decrypt_image_dat(encrypted, aes_key, xor_key)
-            if image_data.startswith(b"wxgf"):
-                converted = self._wxgf_to_png(image_data)
-                if converted is None:
-                    self._add_issue("缺少可用的 HEVC 解码器，部分 wxgf 图片未导出")
-                    return None
-                image_data = converted
-                with self._stats_lock:
-                    self.stats.wxgf_converted += 1
-            source = "本机缩略图" if is_thumbnail else "本机原图缓存"
-            return _pdf_image(image_data, source=source, is_thumbnail=is_thumbnail)
-        except (OSError, ValueError, RuntimeError):
-            self._add_issue("部分本机图片解密或解码失败")
-            return None
+        issues: set[str] = set()
+        for dat_path, is_thumbnail in candidates:
+            try:
+                encrypted = dat_path.read_bytes()
+                if _image_format(encrypted):
+                    image_data = encrypted
+                else:
+                    keys = self._account_image_keys(encrypted)
+                    if encrypted.startswith(_V2_MAGIC) and keys is None:
+                        issues.add("图片密钥缓存不可用，请在本机登录对应微信账号后重新导出一次")
+                        continue
+                    aes_key, xor_key = keys or (b"", 0)
+                    image_data = decrypt_image_dat(encrypted, aes_key, xor_key)
+                if image_data.startswith(b"wxgf"):
+                    converted = self._wxgf_to_png(image_data)
+                    if converted is None:
+                        issues.add("缺少可用的 HEVC 解码器，部分 wxgf 原图无法解码")
+                        continue
+                    image_data = converted
+                    with self._stats_lock:
+                        self.stats.wxgf_converted += 1
+                source = "本机缩略图" if is_thumbnail else "本机原图缓存"
+                result = _pdf_image(image_data, source=source, is_thumbnail=is_thumbnail)
+                if is_thumbnail:
+                    self._add_issue("部分原图不可用，已使用本机缩略图并在归档中标注")
+                return result
+            except (OSError, ValueError, RuntimeError):
+                issues.add("部分本机图片解密或解码失败")
+        for issue in issues:
+            self._add_issue(issue)
+        return None
 
     def _resolve_emoticon(self, reference: MediaReference) -> PdfImage | None:
-        local = self._find_local_emoticon(reference.md5)
-        if local is not None:
+        candidates = self._find_emoticon_candidates(reference)
+        for local, thumbnail in candidates:
             try:
                 data = local.read_bytes()
-                if not _image_format(data) and reference.aes_key:
-                    data = _decrypt_cdn_blob(data, reference.aes_key)
-                if _image_format(data):
-                    return _pdf_image(data, source="本机表情缓存")
+                if not _image_format(data):
+                    key = self._account_emoticon_key(data)
+                    if key is not None:
+                        try:
+                            data = decrypt_emoticon_cache(data, key)
+                        except ValueError:
+                            pass
+                image = self._decode_image_blob(
+                    data, aes_key=reference.aes_key,
+                    source="本机表情缩略图" if thumbnail else "本机表情缓存",
+                    is_thumbnail=thumbnail,
+                )
+                if image is not None:
+                    return image
             except (OSError, ValueError):
                 pass
 
         if not self.allow_network:
-            self._add_issue("部分表情图片尚未缓存在本机（未启用联网补全）")
+            self._add_issue("部分本机表情缓存无法解码（未启用联网补全）" if candidates
+                            else "部分表情图片尚未缓存在本机（未启用联网补全）")
             return None
 
         candidates = (
@@ -452,15 +515,13 @@ class MediaResolver:
                 continue
             try:
                 data = self._download(url)
-                if not _image_format(data) and reference.aes_key:
-                    data = _decrypt_cdn_blob(data, reference.aes_key)
-                if not _image_format(data):
-                    continue
-                return _pdf_image(
-                    data,
+                image = self._decode_image_blob(
+                    data, aes_key=reference.aes_key,
                     source="微信官方 CDN 缩略图" if is_thumbnail else "微信官方 CDN",
                     is_thumbnail=is_thumbnail,
                 )
+                if image is not None:
+                    return image
             except (OSError, ValueError, RuntimeError):
                 continue
         self._add_issue("部分表情图片在本机和微信 CDN 均不可用")
@@ -644,7 +705,7 @@ class MediaResolver:
                 if decrypted is not None:
                     data = decrypted
             if not _image_format(data):
-                keys = self._account_image_keys()
+                keys = self._account_image_keys(data)
                 if data.startswith(_V2_MAGIC) and keys is None:
                     self._add_issue("未能从当前微信登录进程读取朋友圈图片密钥")
                     return None
@@ -653,7 +714,7 @@ class MediaResolver:
             if data.startswith(b"wxgf"):
                 converted = self._wxgf_to_png(data)
                 if converted is None:
-                    self._add_issue("缺少可用的 HEVC 解码器，部分朋友圈照片未导出")
+                    self._add_issue("部分 WXGF 图片或表情无法解码")
                     return None
                 data = converted
                 with self._stats_lock:
@@ -662,29 +723,125 @@ class MediaResolver:
         except (OSError, ValueError, RuntimeError):
             return None
 
-    def _account_image_keys(self) -> tuple[bytes, int] | None:
-        if self._image_keys_checked:
+    def prepare_local_image_keys(self) -> bool:
+        """Capture validated media keys while WeChat is available for later offline use."""
+        return self._account_image_keys() is not None
+
+    def prepare_local_media_keys(self) -> None:
+        """Validate and retain local image and sticker keys at connection time."""
+        self.prepare_local_image_keys()
+        stores = self.account.account_dir / "business" / "emoticon"
+        locations = [stores / "Persist", stores / "PersistStore"]
+        cache_root = self.account.account_dir / "cache"
+        if cache_root.is_dir():
+            locations.extend(month / "Emoticon" for month in sorted(cache_root.iterdir(), reverse=True) if month.is_dir())
+        locations.extend((stores / "Thumb", stores / "ThumbStore"))
+        root = self.account.account_dir.resolve()
+        for location in locations:
+            if not location.is_dir():
+                continue
+            for path in chain(location.glob("*"), location.glob("*/*")):
+                try:
+                    size = path.stat().st_size
+                    if (not path.is_file() or not 0 < size <= 2 * 1024**2 or size % 16
+                            or not re.fullmatch(r"[0-9a-f]{32}(?:\.(?:gif|png|webp|jpg|thumb))?", path.name, re.I)
+                            or not path.resolve().is_relative_to(root)):
+                        continue
+                    data = path.read_bytes()
+                except OSError:
+                    continue
+                if not _image_format(data) and self._account_emoticon_key(data) is not None:
+                    return
+
+    def _account_emoticon_key(self, probe: bytes) -> bytes | None:
+        if not probe or len(probe) % 16:
+            return None
+        def matches(key: bytes | None) -> bool:
+            if key is None:
+                return False
+            try:
+                decrypt_emoticon_cache(probe, key)
+                return True
+            except ValueError:
+                return False
+        if matches(self._emoticon_key):
+            return self._emoticon_key
+        with self._emoticon_key_lock:
+            if matches(self._emoticon_key):
+                return self._emoticon_key
+            cached = self._image_key_cache.load_emoticon_key(self.wxid)
+            if matches(cached):
+                self._emoticon_key = cached
+                return cached
+            now = time.monotonic()
+            if now - self._emoticon_key_attempt_at < 2:
+                return None
+            self._emoticon_key_attempt_at = now
+            try:
+                key = discover_account_emoticon_key(self.wxid, probe)
+            except (OSError, ValueError, RuntimeError):
+                return None
+            if not matches(key):
+                return None
+            self._emoticon_key = key
+            if not self._image_key_cache.save_emoticon_key(self.wxid, key):
+                self._add_issue("本机表情已可解密，但未能保存加密密钥缓存；离线重开时仍需登录微信")
+            return key
+
+    def _account_image_keys(self, data: bytes = b"") -> tuple[bytes, int] | None:
+        probe = data[15:31] if data.startswith(_V2_MAGIC) and len(data) >= 31 else None
+        legacy = data.startswith(_V1_MAGIC)
+
+        def matches(keys: tuple[bytes, int]) -> bool:
+            if legacy:
+                try:
+                    return bool(_image_format(decrypt_image_dat(data, *keys)))
+                except ValueError:
+                    return False
+            return probe is None or _validate_v2_key(probe, keys[0])
+
+        if self._image_keys is not None and matches(self._image_keys):
             return self._image_keys
         with self._image_key_lock:
-            if not self._image_keys_checked:
-                self._image_keys_checked = True
-                self._image_keys = discover_account_image_keys(
-                    self.account.account_dir, self.wxid
+            if self._image_keys is not None and matches(self._image_keys):
+                return self._image_keys
+            if probe is None and not legacy:
+                probe = _find_v2_probe(self.account.account_dir)
+            if probe is None and not legacy:
+                return None
+            cached = self._image_key_cache.load_image_keys(self.wxid)
+            if cached is not None and matches(cached):
+                self._image_keys = cached
+                return cached
+            # A login may complete during an export; do not permanently cache failure.
+            now = time.monotonic()
+            if now - self._image_key_attempt_at < 2:
+                return None
+            self._image_key_attempt_at = now
+            try:
+                keys = discover_account_image_keys(
+                    self.account.account_dir, self.wxid, probe=probe,
                 )
-        return self._image_keys
+            except (OSError, ValueError, RuntimeError):
+                return None
+            if keys is None or not matches(keys):
+                return None
+            self._image_keys = keys
+            if not self._image_key_cache.save_image_keys(self.wxid, keys):
+                self._add_issue("图片已可解密，但未能保存加密密钥缓存；离线重开时仍需登录微信")
+            return keys
 
     def _find_image_dat(self, message: Message, md5: str) -> tuple[Path, bool] | None:
-        if not message.conversation_id or not md5:
-            return None
+        candidates = self._find_image_dats(message, md5)
+        return candidates[0] if candidates else None
+
+    def _find_image_dats(self, message: Message, md5: str) -> list[tuple[Path, bool]]:
+        if not message.conversation_id or not re.fullmatch(r"[0-9a-f]{32}", md5, re.I):
+            return []
         chat_hash = hashlib.md5(message.conversation_id.encode("utf-8")).hexdigest()
         chat_root = self.account.account_dir / "msg" / "attach" / chat_hash
         month = message.datetime.strftime("%Y-%m")
         image_dir = chat_root / month / "Img"
-        for filename, thumbnail in ((f"{md5}.dat", False), (f"{md5}_t.dat", True)):
-            candidate = image_dir / filename
-            if candidate.is_file():
-                return candidate, thumbnail
-
         index = self._attach_indexes.get(chat_hash)
         if index is None:
             with self._attach_index_lock:
@@ -695,25 +852,53 @@ class MediaResolver:
                         for candidate in chat_root.rglob("*.dat"):
                             index.setdefault(candidate.name.lower(), candidate)
                     self._attach_indexes[chat_hash] = index
-        original = index.get(f"{md5}.dat".lower())
-        if original is not None:
-            return original, False
-        thumbnail = index.get(f"{md5}_t.dat".lower())
-        return (thumbnail, True) if thumbnail is not None else None
+        candidates: list[tuple[Path, bool]] = []
+        for filename, thumbnail in ((f"{md5}.dat", False), (f"{md5}_t.dat", True)):
+            for candidate in (image_dir / filename, index.get(filename.lower())):
+                if (
+                    candidate is not None and candidate.is_file()
+                    and candidate.resolve().is_relative_to(self.account.account_dir.resolve())
+                ):
+                    item = (candidate, thumbnail)
+                    if item not in candidates:
+                        candidates.append(item)
+        return candidates
 
     def _find_local_emoticon(self, md5: str) -> Path | None:
-        if not md5:
-            return None
-        direct = self.account.account_dir / "business" / "emoticon" / "Persist" / md5[:2] / md5
-        if direct.is_file():
-            return direct
+        candidates = self._find_emoticon_candidates(MediaReference("emoticon", md5=md5))
+        return candidates[0][0] if candidates else None
+
+    def _find_emoticon_candidates(self, reference: MediaReference) -> list[tuple[Path, bool]]:
+        identifiers = list(dict.fromkeys(value.lower() for value in (reference.md5, reference.local_md5)
+                                        if re.fullmatch(r"[0-9a-f]{32}", value, re.I)))
+        if not identifiers:
+            return []
+        root = self.account.account_dir.resolve()
+        stores = self.account.account_dir / "business" / "emoticon"
+        locations = [(stores / "Persist", False), (stores / "PersistStore", False)]
         cache_root = self.account.account_dir / "cache"
         if cache_root.is_dir():
-            for month in sorted(cache_root.iterdir(), reverse=True):
-                candidate = month / "Emoticon" / md5[:2] / md5
-                if candidate.is_file():
-                    return candidate
-        return None
+            locations.extend((month / "Emoticon", False)
+                             for month in sorted(cache_root.iterdir(), reverse=True) if month.is_dir())
+        locations.extend(((stores / "Thumb", True), (stores / "ThumbStore", True)))
+        candidates: list[tuple[Path, bool]] = []
+        seen: set[Path] = set()
+        for location, thumbnail in locations:
+            for identifier in identifiers:
+                for directory in (location / identifier[:2], location):
+                    for suffix in ("", ".gif", ".png", ".webp", ".jpg", ".thumb"):
+                        candidate = directory / (identifier + suffix)
+                        try:
+                            if not candidate.is_file():
+                                continue
+                            resolved = candidate.resolve()
+                            if resolved in seen or not resolved.is_relative_to(root):
+                                continue
+                        except OSError:
+                            continue
+                        seen.add(resolved)
+                        candidates.append((candidate, thumbnail or suffix == ".thumb"))
+        return candidates
 
     def _find_sns_image(
         self, md5: str, media: MomentMedia | None = None
@@ -1102,8 +1287,18 @@ def _decrypt_cdn_blob(data: bytes, aes_key_hex: str) -> bytes:
         raise ValueError("表情 AES 密钥格式无效") from error
     if len(key) != 16 or len(data) % 16:
         raise ValueError("表情密文长度无效")
-    decryptor = Cipher(algorithms.AES(key), modes.ECB()).decryptor()
-    return _pkcs7_unpad(decryptor.update(data) + decryptor.finalize())
+    # Current sticker CDN files use CBC with IV=key. Older files use ECB.
+    # Valid padding alone is insufficient to distinguish them: check the
+    # resulting media header before selecting a mode.
+    for mode in (modes.CBC(key), modes.ECB()):
+        try:
+            decryptor = Cipher(algorithms.AES(key), mode).decryptor()
+            result = _pkcs7_unpad(decryptor.update(data) + decryptor.finalize())
+            if _image_format(result) or _video_file_type(result)[0]:
+                return result
+        except ValueError:
+            continue
+    raise ValueError("表情 AES 解密结果不是受支持的媒体")
 
 
 _ISAAC64_MASK = (1 << 64) - 1
@@ -1292,7 +1487,7 @@ def _validate_v2_key(probe: bytes, aes_key: bytes) -> bool:
     return bool(_image_format(plaintext))
 
 
-def _read_cfg_candidates(pid: int) -> list[tuple[int, str]]:
+def _read_cfg_candidates(pid: int, *, full_uin: bool = False) -> list[tuple[int, str]]:
     module = _find_weixin_module(pid)
     if module is None:
         return []
@@ -1331,10 +1526,11 @@ def _read_cfg_candidates(pid: int) -> list[tuple[int, str]]:
                 cfg = struct.unpack("<Q", cfg_pointer)[0]
                 if not 0x10000 <= cfg < 0x800000000000:
                     continue
-                value = memory.read(cfg + 0x40, 4)
-                if len(value) != 4:
+                width = 8 if full_uin else 4
+                value = memory.read(cfg + 0x40, width)
+                if len(value) != width:
                     continue
-                cfg_dword = struct.unpack("<I", value)[0]
+                cfg_dword = struct.unpack("<Q" if full_uin else "<I", value)[0]
                 if not cfg_dword or cfg_dword in seen:
                     continue
                 seen.add(cfg_dword)
@@ -1357,7 +1553,7 @@ def _read_remote_string(memory: ProcessMemory, address: int) -> str:
     return data.decode("utf-8", errors="replace") if len(data) == size else ""
 
 
-def _find_weixin_module(pid: int) -> tuple[int, int] | None:
+def _find_weixin_module(pid: int, *, strict: bool = False) -> tuple[int, int] | None:
     if os.name != "nt":
         return None
     from ctypes import wintypes
@@ -1386,6 +1582,8 @@ def _find_weixin_module(pid: int) -> tuple[int, int] | None:
     kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
     snapshot = kernel32.CreateToolhelp32Snapshot(0x08 | 0x10, pid)
     if not snapshot or snapshot == ctypes.c_void_p(-1).value:
+        if strict:
+            raise ctypes.WinError(ctypes.get_last_error())
         return None
     try:
         entry = ModuleEntry32W()
@@ -1396,6 +1594,8 @@ def _find_weixin_module(pid: int) -> tuple[int, int] | None:
                 return int(entry.modBaseAddr or 0), int(entry.modBaseSize)
             entry.dwSize = ctypes.sizeof(entry)
             ok = kernel32.Module32NextW(snapshot, ctypes.byref(entry))
+        if strict and ctypes.get_last_error() != 18:  # ERROR_NO_MORE_FILES
+            raise ctypes.WinError(ctypes.get_last_error())
     finally:
         kernel32.CloseHandle(snapshot)
     return None

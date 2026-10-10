@@ -488,13 +488,14 @@ def test_update_banner_and_offline_history_stay_inside_ui(app, monkeypatch):
     controller.show()
     assert "新增功能" in controller.notes.get("1.0", "end")
     assert "target-sha256" not in controller.notes.get("1.0", "end")
-    assert controller.dialog_current.get() == "v1.6.0"
+    from wechat_exporter import __version__
+    assert controller.dialog_current.get() == f"v{__version__}"
     assert controller.dialog_latest.get() == "v1.7.0"
     assert controller.release_heading.get() == "v1.7.0"
     assert controller.release_list.size() == 1
     controller.manager.result = CheckResult("unavailable")
     controller.refresh()
-    assert controller.release_heading.get() == "v1.6.0"
+    assert controller.release_heading.get() == f"v{__version__}"
     assert controller.release_list.size() >= 2
     assert "JSONL" in controller.notes.get("1.0", "end")
 

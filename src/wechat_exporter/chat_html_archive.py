@@ -15,7 +15,7 @@ import tempfile
 import time
 from typing import Any
 
-from .faces import normalize_wechat_faces
+from .native_face_assets import NATIVE_FACE_ROOT, NATIVE_FACE_FILES, native_face_runs
 from .content import extract_message_details
 from . import PROJECT_URL, __version__
 from .jsonl_exporter import understandable_message_type
@@ -127,7 +127,7 @@ class ChatHtmlArchiveWriter:
         self.avatar_resolver = avatar_resolver
         self.media_resolver = media_resolver
         self.attachment_resolver = attachment_resolver
-        self.display_text = display_text or normalize_wechat_faces
+        self.display_text = display_text or str
         self.check_cancelled = check_cancelled or (lambda: None)
         self.progress = progress
         self.chunk_size = max(1, int(chunk_size))
@@ -152,6 +152,7 @@ class ChatHtmlArchiveWriter:
         self._suppressed_warning_count = 0
         self._resource_paths: dict[tuple[str, str], str] = {}
         self._checksums: dict[str, str] = {}
+        self._native_faces: dict[str, str] = {}
         self._first_timestamp: int | None = None
         self._last_timestamp: int | None = None
         self._last_progress_count = 0
@@ -324,13 +325,38 @@ class ChatHtmlArchiveWriter:
                         else "未知成员" if quoted_sender.startswith("wxid_") else quoted_sender or "未知成员")
             name = _profile_display_name(profile, fallback=fallback,
                                          prefer_group_name=self.conversation.is_group)
-            record["text"] = normalize_wechat_faces(str(details.get("reply_text", ""))).text
+            record["text"] = str(details.get("reply_text", ""))
             record["quote"] = {"sender_name": name,
-                               "text": normalize_wechat_faces(str(details.get("quoted_text", ""))).text}
+                               "text": str(details.get("quoted_text", ""))}
         if message_kind == "transfer":
             record["payment"] = {key: details[key] for key in ("amount", "memo", "status_text", "paysubtype")
                                  if key in details}
+        elif details.get("kind") == "transfer_reminder":
+            record["payment"] = {"kind": "reminder", "status_text": details["status_text"]}
+        self._remember_native_faces(str(record["text"]))
+        if "quote" in record:
+            self._remember_native_faces(str(record["quote"]["text"]))
         return record
+
+    def _remember_native_faces(self, text: str) -> None:
+        for label, native in native_face_runs(text):
+            if native and label not in self._native_faces:
+                filename = NATIVE_FACE_FILES[label]
+                relative = "assets/faces/" + filename
+                if relative not in self._checksums:
+                    self._copy_native_face(filename)
+                self._native_faces[label] = relative
+
+    def _copy_native_face(self, filename: str) -> None:
+        source = NATIVE_FACE_ROOT / filename
+        target = self.assets_root / "faces" / filename
+        target.parent.mkdir(exist_ok=True)
+        shutil.copyfile(source, target)
+        self._remember_checksum(target, _file_sha256(target))
+        notice = target.parent / "NOTICE.txt"
+        if "assets/faces/NOTICE.txt" not in self._checksums:
+            shutil.copyfile(NATIVE_FACE_ROOT / "NOTICE.txt", notice)
+            self._remember_checksum(notice, _file_sha256(notice))
 
     def _message_media(
         self,
@@ -435,6 +461,7 @@ class ChatHtmlArchiveWriter:
             "bytes": byte_count,
             "sha256": digest,
             "animated": bool(_value(item, "is_animated", False)),
+            "is_thumbnail": bool(_value(item, "is_thumbnail", False)),
         }
         fallback_data = _bytes_value(_value(item, "fallback_data", b""))
         fallback_extension = _safe_extension(
@@ -497,6 +524,12 @@ class ChatHtmlArchiveWriter:
         self._participants[participant_id] = {
             "id": participant_id,
             "name": name,
+            "search_names": list(dict.fromkeys(
+                str(value).strip() for value in (
+                    name, message.sender_name, _value(profile, "group_alias", ""),
+                    _value(profile, "remark", ""), _value(profile, "nickname", ""),
+                ) if value and str(value).strip()
+            )),
             "avatar": {
                 "status": "placeholder",
                 "path": None,
@@ -695,6 +728,7 @@ class ChatHtmlArchiveWriter:
             },
             "settings": options,
             "participants": list(self._participants.values()),
+            "native_faces": self._native_faces,
             "message_types": [
                 {"type": key, "label": _type_label(key), "count": value}
                 for key, value in sorted(self._message_types.items())

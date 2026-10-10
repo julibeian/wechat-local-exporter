@@ -140,6 +140,8 @@ class AccountDatabaseCache:
         digest = hashlib.sha256(self.identity.encode("utf-8")).hexdigest()[:32]
         self.root = (root or app_data_dir() / _CACHE_FOLDER) / digest
         self.keys_path = self.root / "keys.dpapi"
+        self.image_keys_path = self.root / "image-keys.dpapi"
+        self.emoticon_key_path = self.root / "emoticon-key.dpapi"
         self.workspace_root = self.root / "workspace"
         self._protect = protect
         self._unprotect = unprotect
@@ -148,6 +150,109 @@ class AccountDatabaseCache:
     @staticmethod
     def _identity(account: AccountLocation) -> str:
         return f"{account.wxid.casefold()}\n{str(account.db_dir.resolve()).casefold()}"
+
+    def load_image_keys(self, wxid: str) -> tuple[bytes, int] | None:
+        """Unprotect account-bound image keys; the caller must validate a DAT probe."""
+        try:
+            if self.image_keys_path.stat().st_size > 16 * 1024:
+                return None
+            payload = json.loads(self._unprotect(
+                self.image_keys_path.read_bytes(),
+                entropy=self._entropy + b"\0images\0" + wxid.encode("utf-8"),
+            ).decode("utf-8"))
+            if (
+                payload.get("version") != _CACHE_VERSION
+                or payload.get("identity") != self.identity
+                or payload.get("wxid") != wxid
+            ):
+                return None
+            aes_key = bytes.fromhex(payload.get("aes_key", ""))
+            xor_key = payload.get("xor_key")
+            if len(aes_key) == 16 and type(xor_key) is int and 0 <= xor_key <= 255:
+                return aes_key, xor_key
+        except (OSError, ValueError, TypeError, UnicodeError, AttributeError):
+            pass
+        return None
+
+    def save_image_keys(self, wxid: str, keys: tuple[bytes, int]) -> bool:
+        """Best-effort DPAPI persistence after validation against a local DAT file."""
+        aes_key, xor_key = keys
+        if len(aes_key) != 16 or type(xor_key) is not int or not 0 <= xor_key <= 255:
+            return False
+        temporary: Path | None = None
+        try:
+            payload = json.dumps({
+                "version": _CACHE_VERSION,
+                "identity": self.identity,
+                "wxid": wxid,
+                "aes_key": aes_key.hex(),
+                "xor_key": xor_key,
+            }, separators=(",", ":")).encode("utf-8")
+            protected = self._protect(
+                payload,
+                entropy=self._entropy + b"\0images\0" + wxid.encode("utf-8"),
+            )
+            self.root.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                dir=self.root, prefix="image-keys-", suffix=".tmp", delete=False,
+            ) as stream:
+                temporary = Path(stream.name)
+                stream.write(protected)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self.image_keys_path)
+            return True
+        except (OSError, ValueError):
+            return False
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    def load_emoticon_key(self, wxid: str) -> bytes | None:
+        """Return an account-bound sticker key; callers validate it on a cache file."""
+        try:
+            if self.emoticon_key_path.stat().st_size > 16 * 1024:
+                return None
+            payload = json.loads(self._unprotect(
+                self.emoticon_key_path.read_bytes(),
+                entropy=self._entropy + b"\0emoticons\0" + wxid.encode("utf-8"),
+            ).decode("utf-8"))
+            if (payload.get("version") != _CACHE_VERSION or payload.get("identity") != self.identity
+                    or payload.get("wxid") != wxid):
+                return None
+            key = bytes.fromhex(payload.get("aes_key", ""))
+            return key if len(key) == 16 else None
+        except (OSError, ValueError, TypeError, UnicodeError, AttributeError):
+            return None
+
+    def save_emoticon_key(self, wxid: str, key: bytes) -> bool:
+        """Persist only the validated AES key using Windows user protection."""
+        if len(key) != 16:
+            return False
+        temporary: Path | None = None
+        try:
+            payload = json.dumps({"version": _CACHE_VERSION, "identity": self.identity,
+                                  "wxid": wxid, "aes_key": key.hex()}, separators=(",", ":")).encode()
+            protected = self._protect(payload, entropy=self._entropy + b"\0emoticons\0" + wxid.encode("utf-8"))
+            self.root.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=self.root, prefix="emoticon-key-", suffix=".tmp", delete=False) as stream:
+                temporary = Path(stream.name)
+                stream.write(protected)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self.emoticon_key_path)
+            return True
+        except (OSError, ValueError):
+            return False
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def load_keys(self, targets: Iterable[DatabaseTarget]) -> DatabaseKeys | None:
         target_list = list(targets)

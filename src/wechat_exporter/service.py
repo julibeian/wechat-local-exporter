@@ -210,6 +210,7 @@ class ExporterService:
             self.workspace.prepare(progress=snapshot_progress)
             self.archive = WeChatArchive(self.account, self.workspace, calibrations)
             self.archive.load_metadata()
+            MediaResolver(self.account, self.archive.self_wxid).prepare_local_media_keys()
             if save_cached_keys and database_cache is not None:
                 try:
                     database_cache.save_keys(keys, self.targets)

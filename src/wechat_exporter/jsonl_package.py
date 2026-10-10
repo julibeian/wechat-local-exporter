@@ -58,6 +58,7 @@ class ChatVideoLocator:
         names = {
             value.casefold()
             for value in (
+                reference.local_md5,
                 reference.md5,
                 Path(reference.filename).name,
                 Path(reference.filename).stem,
@@ -176,7 +177,7 @@ def export_conversation_jsonl_package(
             with messages_path.open("w", encoding="utf-8", newline="\n") as stream:
                 for index, message in enumerate(messages, start=1):
                     _check(check_cancelled)
-                    record = message_to_json_record(message, conversation)
+                    record = package_message_record(message, conversation)
                     media_items = _export_message_media(
                         root=root,
                         index=index,
@@ -187,27 +188,6 @@ def export_conversation_jsonl_package(
                         request=request,
                     )
                     record["media"] = media_items
-                    if record.get("attachment") is not None:
-                        original_attachment = dict(record["attachment"])  # type: ignore[arg-type]
-                        attachment = {
-                            key: original_attachment[key]
-                            for key in (
-                                "filename",
-                                "extension",
-                                "size",
-                                "md5",
-                                "attachment_id",
-                            )
-                            if key in original_attachment
-                        }
-                        attachment.update(
-                            {
-                                "included": False,
-                                "export_via": "batch_chat_files",
-                                "reason": "普通文件实体不装入资料包；请使用“批量导出聊天文件”。",
-                            }
-                        )
-                        record["attachment"] = attachment
                     stream.write(
                         json.dumps(
                             record,
@@ -279,6 +259,17 @@ def export_conversation_jsonl_package(
         message_count=message_count,
         status_counts=dict(status_counts),
     )
+
+
+def package_message_record(message: Message, conversation: Conversation) -> dict[str, object]:
+    record = message_to_json_record(message, conversation)
+    original = record.get("attachment")
+    if isinstance(original, dict):
+        attachment = {key: original[key] for key in ("filename", "extension", "size", "md5", "attachment_id") if key in original}
+        attachment.update(included=False, export_via="batch_chat_files",
+                          reason="普通文件实体不装入资料包；请使用“批量导出聊天文件”。")
+        record["attachment"] = attachment
+    return record
 
 
 def _export_message_media(

@@ -43,7 +43,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name=f"WeChat-TXT-PDF-Exporter-v{version}",
+    name=f"WeChat-Local-Exporter-v{version}",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

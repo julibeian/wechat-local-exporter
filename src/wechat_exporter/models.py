@@ -42,6 +42,7 @@ class MediaReference:
     size: int | None = None
     duration_seconds: float | None = None
     filename: str = ""
+    local_md5: str = ""
 
 
 @dataclass(frozen=True, slots=True)

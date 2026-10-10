@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import TextIO
 
 from .faces import normalize_wechat_faces
 from .models import Conversation, Message
@@ -21,11 +22,13 @@ class JsonTextTranscriptWriter:
         *,
         start_timestamp: int = 0,
         end_timestamp: int = 0,
+        output_stream: TextIO | None = None,
     ):
         self.path = path
         self.conversation = conversation
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._stream = path.open("w", encoding="utf-8", newline="\n")
+        if output_stream is None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._stream = output_stream if output_stream is not None else path.open("w", encoding="utf-8", newline="\n")
         self._first = True
         self.count = 0
         header = {

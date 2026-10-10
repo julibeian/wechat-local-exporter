@@ -11,5 +11,6 @@ build/
 dist/
 *.spec
 !packaging/WeChat-TXT-PDF-Exporter.spec
+!packaging/WeChat-Local-Exporter.spec
 /tmp/
 /output/

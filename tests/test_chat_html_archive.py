@@ -158,9 +158,10 @@ def test_chat_html_archive_is_offline_safe_and_preserves_visible_content(tmp_pat
         path.read_text(encoding="utf-8")
         for path in sorted((result.root / "data").glob("messages-*.js"))
     )
-    assert "收到❤️" in chunks
-    assert '"text":"收到[爱心]' not in chunks
-    assert '"raw_text":"收到[爱心] ' in chunks
+    assert '"text":"收到[爱心]' in chunks
+    assert "收到❤️" not in chunks
+    assert manifest["native_faces"]["[爱心]"].endswith(".png")
+    assert (result.root / manifest["native_faces"]["[爱心]"]).is_file()
     assert "<script>" not in chunks
     assert "\\u003cscript>alert(1)\\u003c/script>" in chunks
     assert "课程表.xlsx" in chunks
@@ -230,8 +231,8 @@ def test_service_exports_atomic_html_entrypoint_and_keeps_raw_face_text(tmp_path
     assert first.file_categories[first.files[0]] == "chat"
     chunk = next((first.files[0].parent / "data").glob("messages-*.js"))
     chunk_text = chunk.read_text(encoding="utf-8")
-    assert "收到❤️" in chunk_text
-    assert '"raw_text":"收到[爱心] ' in chunk_text
+    assert '"text":"收到[爱心] ' in chunk_text
+    assert "收到❤️" not in chunk_text
 
 
 def test_cancelled_service_html_export_removes_only_current_artifacts(tmp_path) -> None:

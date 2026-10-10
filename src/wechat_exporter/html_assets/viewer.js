@@ -6,6 +6,7 @@
   const pendingChunks = new Map();
   const earlyChunks = new Map();
   let manifest = null;
+  let nativeFacePattern = null;
 
   window.WeChatArchive = Object.freeze({
     setManifest(value) {
@@ -148,6 +149,10 @@
       dialog: byId("media-dialog"),
       dialogImage: byId("dialog-image"),
       dialogCaption: byId("dialog-caption"),
+      mediaViewport: byId("media-viewport"),
+      mediaPrevious: byId("media-previous"),
+      mediaNext: byId("media-next"),
+      dialogMediaStatus: byId("dialog-media-status"),
     };
   }
 
@@ -176,6 +181,7 @@
         const option = document.createElement("option");
         option.value = participant.id;
         option.textContent = participant.name || participant.id;
+        option.dataset.searchNames = (participant.search_names || []).join(" ");
         elements.memberFilter.appendChild(option);
       });
 
@@ -194,7 +200,7 @@
     enhanceFilter(elements.memberFilter, "成员", function (value) {
       const participant = participantMap.get(value);
       return participant ? createAvatar(participant, {sender: value, sender_name: participant.name}) : null;
-    });
+    }, true);
     enhanceFilter(elements.typeFilter, "消息类型", function (value) {
       const type = types.find(function (item) { return item[0] === value; });
       return createIcon(type ? type[2] : "layers");
@@ -209,7 +215,7 @@
     return image;
   }
 
-  function enhanceFilter(select, label, decorate) {
+  function enhanceFilter(select, label, decorate, searchable) {
     const wrapper = document.createElement("div");
     wrapper.className = "filter-picker";
     const trigger = document.createElement("button");
@@ -219,19 +225,35 @@
     trigger.setAttribute("aria-label", label);
     trigger.setAttribute("aria-haspopup", "listbox");
     trigger.setAttribute("aria-expanded", "false");
+    const menu = document.createElement("div");
+    menu.className = "filter-menu";
+    menu.id = select.id + "-menu";
+    menu.hidden = true;
     const list = document.createElement("div");
-    list.className = "filter-menu";
-    list.id = select.id + "-menu";
+    list.className = "filter-options";
+    list.id = select.id + "-options";
     list.setAttribute("role", "listbox");
     list.setAttribute("aria-label", label);
-    list.hidden = true;
-    trigger.setAttribute("aria-controls", list.id);
+    trigger.setAttribute("aria-controls", menu.id);
+    let search = null;
+    if (searchable) {
+      search = document.createElement("input");
+      search.type = "search";
+      search.id = select.id + "-search";
+      search.className = "member-search";
+      search.placeholder = "搜索成员姓名";
+      search.setAttribute("aria-label", "搜索成员姓名");
+      search.setAttribute("aria-controls", list.id);
+      search.autocomplete = "off";
+      menu.appendChild(search);
+    }
     const choices = Array.from(select.options).map(function (option) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "filter-option";
       button.setAttribute("role", "option");
       button.dataset.value = option.value;
+      button.dataset.search = (option.textContent + " " + option.value + " " + (option.dataset.searchNames || "")).toLocaleLowerCase("zh-CN");
       const check = createIcon("check");
       check.classList.add("option-check");
       button.append(check);
@@ -248,6 +270,22 @@
       list.append(button);
       return button;
     });
+    const empty = document.createElement("p");
+    empty.className = "filter-empty";
+    empty.textContent = "没有匹配的成员";
+    empty.setAttribute("role", "status");
+    empty.hidden = true;
+    menu.append(list, empty);
+    function visibleChoices() { return choices.filter(function (button) { return !button.hidden; }); }
+    function filterChoices() {
+      const query = search ? search.value.trim().toLocaleLowerCase("zh-CN") : "";
+      choices.forEach(function (button) {
+        button.hidden = Boolean(query) && (!button.dataset.value || !button.dataset.search.includes(query));
+      });
+      empty.hidden = visibleChoices().length > 0;
+      list.scrollTop = 0;
+    }
+    if (search) search.addEventListener("input", filterChoices);
     function sync() {
       const selected = select.selectedOptions[0];
       trigger.replaceChildren();
@@ -262,38 +300,55 @@
         button.setAttribute("aria-selected", String(button.dataset.value === select.value));
       });
     }
-    function close() { list.hidden = true; trigger.setAttribute("aria-expanded", "false"); }
+    function close() { menu.hidden = true; trigger.setAttribute("aria-expanded", "false"); }
     function open() {
       document.querySelectorAll(".filter-menu").forEach(function (menu) { menu.hidden = true; });
       document.querySelectorAll(".filter-trigger").forEach(function (button) { button.setAttribute("aria-expanded", "false"); });
-      list.hidden = false; trigger.setAttribute("aria-expanded", "true");
+      if (search) search.value = "";
+      filterChoices();
+      menu.hidden = false; trigger.setAttribute("aria-expanded", "true");
       const bounds = trigger.getBoundingClientRect();
       const below = window.innerHeight - bounds.bottom - 12;
       const above = bounds.top - 12;
-      const upward = below < Math.min(list.scrollHeight, 440) && above > below;
+      const upward = below < Math.min(menu.scrollHeight, 440) && above > below;
       wrapper.classList.toggle("opens-up", upward);
-      list.style.maxHeight = Math.max(80, Math.min(440, upward ? above : below)) + "px";
+      menu.style.maxHeight = Math.max(80, Math.min(440, upward ? above : below)) + "px";
       const selected = choices[select.selectedIndex] || choices[0];
-      selected.focus({preventScroll: true});
+      (search || selected).focus({preventScroll: true});
       selected.scrollIntoView({block: "nearest"});
     }
-    trigger.addEventListener("click", function () { list.hidden ? open() : close(); });
+    trigger.addEventListener("click", function () { menu.hidden ? open() : close(); });
     wrapper.addEventListener("keydown", function (event) {
       if (event.key === "Escape") { close(); trigger.focus(); event.preventDefault(); }
-      if (event.key === "Tab") close();
-      if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      if (event.target === search && event.key === "Enter") {
         event.preventDefault();
-        if (list.hidden) { open(); return; }
-        const i = choices.indexOf(document.activeElement);
-        const next = event.key === "Home" ? 0 : event.key === "End" ? choices.length - 1
-          : (i + (event.key === "ArrowDown" ? 1 : -1) + choices.length) % choices.length;
-        choices[next].focus();
+        if (!event.isComposing) {
+          const first = visibleChoices()[0];
+          if (first) first.click();
+        }
+        return;
+      }
+      if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+        if (event.target === search && ["Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        if (menu.hidden) { open(); return; }
+        const visible = visibleChoices();
+        if (!visible.length) return;
+        const i = visible.indexOf(document.activeElement);
+        const next = event.key === "Home" ? 0 : event.key === "End" ? visible.length - 1
+          : i < 0 ? (event.key === "ArrowDown" ? 0 : visible.length - 1)
+          : (i + (event.key === "ArrowDown" ? 1 : -1) + visible.length) % visible.length;
+        visible[next].focus();
       }
     });
+    wrapper.addEventListener("focusout", function (event) { if (!wrapper.contains(event.relatedTarget)) close(); });
     document.addEventListener("click", function (event) { if (!wrapper.contains(event.target)) close(); });
     select.addEventListener("change", sync);
-    select.form.addEventListener("reset", function () { setTimeout(sync, 0); close(); });
-    wrapper.append(trigger, list);
+    select.form.addEventListener("reset", function () {
+      if (search) search.value = "";
+      filterChoices(); setTimeout(sync, 0); close();
+    });
+    wrapper.append(trigger, menu);
     select.after(wrapper);
     sync();
   }
@@ -309,6 +364,29 @@
 
   function bindControls(state) {
     const elements = state.elements;
+    elements.mediaPrevious.addEventListener("click", function () { navigateMedia(state, -1); });
+    elements.mediaNext.addEventListener("click", function () { navigateMedia(state, 1); });
+    document.addEventListener("keydown", function (event) {
+      // A navigation button can lose focus when it becomes disabled at an edge.
+      if (elements.dialog.open && ["ArrowLeft", "ArrowRight"].includes(event.key)) {
+        event.preventDefault();
+        navigateMedia(state, event.key === "ArrowLeft" ? -1 : 1);
+      }
+    });
+    elements.dialog.addEventListener("click", function (event) {
+      if (event.target === elements.dialog || event.target === elements.mediaViewport
+          || event.target.classList.contains("dialog-bar")) elements.dialog.close();
+    });
+    elements.dialog.addEventListener("close", function () {
+      state.mediaGallery = null;
+      elements.dialogImage.removeAttribute("src");
+      elements.dialogMediaStatus.hidden = true;
+    });
+    elements.dialogImage.addEventListener("error", function () {
+      if (!state.mediaGallery) return;
+      elements.dialogMediaStatus.textContent = "图片文件无法读取，可切换查看其他图片。";
+      elements.dialogMediaStatus.hidden = false;
+    });
     byId("settings-button").addEventListener("click", function () {
       const panel = byId("archive-settings");
       panel.hidden = !panel.hidden;
@@ -662,6 +740,34 @@
     return divider;
   }
 
+  function appendMessageText(element, value) {
+    const text = String(value || "");
+    const faces = manifest.native_faces || {};
+    if (!nativeFacePattern) {
+      const labels = Object.keys(faces).sort(function (a, b) { return b.length - a.length; });
+      if (!labels.length) { element.appendChild(document.createTextNode(text)); return; }
+      nativeFacePattern = new RegExp(labels.map(function (label) {
+        return label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      }).join("|"), "g");
+    }
+    nativeFacePattern.lastIndex = 0;
+    let cursor = 0;
+    let match;
+    while ((match = nativeFacePattern.exec(text))) {
+      if (match.index > cursor) element.appendChild(document.createTextNode(text.slice(cursor, match.index)));
+      const label = match[0];
+      const image = document.createElement("img");
+      image.className = "native-face";
+      image.src = faces[label];
+      image.alt = label;
+      image.title = label;
+      image.addEventListener("error", function () { image.replaceWith(document.createTextNode(label)); });
+      element.appendChild(image);
+      cursor = nativeFacePattern.lastIndex;
+    }
+    if (cursor < text.length) element.appendChild(document.createTextNode(text.slice(cursor)));
+  }
+
   function createMessage(record, state, options) {
     const forPrint = Boolean(options && options.forPrint);
     if (record.type === "system") {
@@ -669,7 +775,11 @@
       system.className = "system-message";
       system.dataset.messageId = record.id;
       const text = document.createElement("p");
-      text.textContent = record.text || "系统消息";
+      appendMessageText(text, record.text || "系统消息");
+      if (record.payment && record.payment.kind === "reminder") {
+        system.classList.add("payment-notice");
+        system.appendChild(createIcon("repeat"));
+      }
       system.appendChild(text);
       return system;
     }
@@ -706,7 +816,7 @@
     if (record.text && !record.attachment && !record.payment) {
       const text = document.createElement("p");
       text.className = "message-text";
-      text.textContent = record.text;
+      appendMessageText(text, record.text);
       bubble.appendChild(text);
     }
     if (Array.isArray(record.media) && record.media.length) {
@@ -730,7 +840,7 @@
     if (record.quote) {
       const quote = document.createElement("blockquote");
       quote.className = "message-quote";
-      quote.textContent = (record.quote.sender_name || "未知成员") + "：" + (record.quote.text || "原消息内容不可用");
+      appendMessageText(quote, (record.quote.sender_name || "未知成员") + "：" + (record.quote.text || "原消息内容不可用"));
       stack.appendChild(quote);
     }
 
@@ -821,10 +931,13 @@
       button.appendChild(image);
       if (!forPrint) {
         button.addEventListener("click", function () {
-          openMediaDialog(state.elements, item.path, image.alt, record);
+          openMediaDialog(state, item, record);
         });
       }
       list.appendChild(button);
+      if (item.is_thumbnail) {
+        list.appendChild(mediaFailure("本机缩略图（原图不可用）"));
+      }
     });
     return list;
   }
@@ -1163,13 +1276,85 @@
     }
   }
 
-  function openMediaDialog(elements, path, alt, record) {
-    elements.dialogImage.src = path;
-    elements.dialogImage.alt = alt;
+  function galleryEntries(records, kind, criteria) {
+    const entries = [];
+    records.forEach(function (record) {
+      if (criteria && !matchesCriteria(record, criteria)) return;
+      (record.media || []).forEach(function (item) {
+        if (item.kind === kind && item.status === "exported" && item.path) entries.push({item, record});
+      });
+    });
+    return entries;
+  }
+
+  function openMediaDialog(state, item, record) {
+    const criteria = state.filterCriteria ? Object.assign({}, state.filterCriteria) : null;
+    const entries = galleryEntries(state.currentRecords, item.kind, criteria);
+    const index = entries.findIndex(function (entry) { return entry.record.id === record.id && entry.item === item; });
+    state.mediaGallery = {
+      kind: item.kind, criteria, entries: index < 0 ? [{item, record}] : entries,
+      index: Math.max(0, index), chunkIndex: state.currentChunkIndex, busy: false,
+      atStart: false, atEnd: false,
+    };
+    showGalleryImage(state);
+    if (typeof state.elements.dialog.showModal === "function") state.elements.dialog.showModal();
+  }
+
+  function showGalleryImage(state) {
+    const gallery = state.mediaGallery;
+    const entry = gallery.entries[gallery.index];
+    const elements = state.elements;
+    elements.dialogImage.src = entry.item.path;
+    elements.dialogImage.alt = entry.item.kind === "sticker" ? "聊天表情" : "聊天图片";
     elements.dialogCaption.textContent =
-      (record.sender_name || "未知成员") + " · " + readableDateTime(record.datetime);
-    if (typeof elements.dialog.showModal === "function") {
-      elements.dialog.showModal();
+      (entry.record.sender_name || "未知成员") + " · " + readableDateTime(entry.record.datetime);
+    elements.dialogMediaStatus.hidden = true;
+    updateMediaNavigation(state);
+  }
+
+  function updateMediaNavigation(state) {
+    const gallery = state.mediaGallery;
+    state.elements.mediaPrevious.disabled = gallery.busy || (gallery.index === 0 && (gallery.chunkIndex === 0 || gallery.atStart));
+    state.elements.mediaNext.disabled = gallery.busy || (gallery.index === gallery.entries.length - 1
+      && (gallery.chunkIndex === manifest.chunks.length - 1 || gallery.atEnd));
+  }
+
+  async function navigateMedia(state, direction) {
+    const gallery = state.mediaGallery;
+    if (!gallery || gallery.busy) return;
+    if ((direction < 0 && state.elements.mediaPrevious.disabled) || (direction > 0 && state.elements.mediaNext.disabled)) return;
+    const next = gallery.index + direction;
+    if (next >= 0 && next < gallery.entries.length) {
+      gallery.index = next;
+      showGalleryImage(state);
+      return;
+    }
+    gallery.busy = true;
+    updateMediaNavigation(state);
+    const status = state.elements.dialogMediaStatus;
+    status.textContent = "正在读取" + (direction < 0 ? "上一张" : "下一张") + "图片…";
+    status.hidden = false;
+    try {
+      for (let i = gallery.chunkIndex + direction; i >= 0 && i < manifest.chunks.length; i += direction) {
+        const records = await loadChunkData(manifest.chunks[i]);
+        if (state.mediaGallery !== gallery) return;
+        const entries = galleryEntries(records, gallery.kind, gallery.criteria);
+        if (entries.length) {
+          gallery.entries = entries;
+          gallery.index = direction < 0 ? entries.length - 1 : 0;
+          gallery.chunkIndex = i;
+          gallery.atStart = gallery.atEnd = false;
+          showGalleryImage(state);
+          return;
+        }
+      }
+      gallery[direction < 0 ? "atStart" : "atEnd"] = true;
+      status.textContent = direction < 0 ? "已到第一张图片" : "已到最后一张图片";
+    } catch (error) {
+      if (state.mediaGallery === gallery) status.textContent = "图片分块无法读取，请重试。";
+    } finally {
+      gallery.busy = false;
+      if (state.mediaGallery === gallery) updateMediaNavigation(state);
     }
   }
 

@@ -51,7 +51,7 @@
             <select id="type-filter" name="type" hidden>
               <option value="">全部类型</option>
             </select>
-            <details class="date-picker"><summary id="date-summary">全部日期</summary><div class="date-fields">
+            <details class="date-picker"><summary><span id="date-summary">全部日期</span><img class="ui-icon" src="assets/icons/chevrons-down.svg" alt=""></summary><div class="date-fields">
               <label for="date-from">开始日期</label>
               <input id="date-from" name="dateFrom" type="date">
               <label for="date-to">结束日期</label>
@@ -71,11 +71,10 @@
 
         <footer class="archive-footer">
           <div class="footer-tools">
-            <a class="project-link" href="{{PROJECT_URL}}" title="julibeian/wechat-local-exporter" target="_blank" rel="noopener noreferrer"><img src="assets/icons/github.svg" alt=""><span>wechat-local-exporter</span></a>
+            <a class="project-link" href="{{PROJECT_URL}}" title="julibeian/wechat-local-exporter" target="_blank" rel="noopener noreferrer"><img src="assets/icons/github.svg" alt=""><span class="project-meta"><span class="project-name">wechat-local-exporter</span><span class="exporter-version">v{{VERSION}}</span></span></a>
             <button class="text-button" id="settings-button" type="button" aria-label="归档设置" aria-controls="archive-settings" aria-expanded="false" title="归档设置"><img class="ui-icon" src="assets/icons/settings.svg" alt=""></button>
             <button class="text-button" id="theme-button" type="button">主题：自动</button>
           </div>
-          <p class="exporter-version">exporter v{{VERSION}}</p>
           <section id="archive-settings" hidden aria-label="归档设置">
             <button class="button" id="print-button" type="button" disabled>打印 / 另存 PDF</button>
             <nav class="chunk-navigation" aria-label="分块导航">
@@ -125,12 +124,17 @@
     <div class="print-message-list" id="print-message-list"></div>
   </section>
 
-  <dialog class="media-dialog" id="media-dialog">
+  <dialog class="media-dialog" id="media-dialog" aria-labelledby="dialog-caption">
     <form method="dialog" class="dialog-bar">
       <p id="dialog-caption">查看图片</p>
-      <button class="button" type="submit">关闭</button>
+      <button class="dialog-close" type="submit" aria-label="关闭图片" title="关闭图片（Esc）">×</button>
     </form>
-    <img id="dialog-image" alt="">
+    <div class="media-viewport" id="media-viewport">
+      <button class="media-navigation media-previous" id="media-previous" type="button" aria-label="上一张图片" title="上一张图片（←）">‹</button>
+      <img id="dialog-image" alt="">
+      <p class="dialog-media-status" id="dialog-media-status" role="status" hidden></p>
+      <button class="media-navigation media-next" id="media-next" type="button" aria-label="下一张图片" title="下一张图片（→）">›</button>
+    </div>
   </dialog>
 
   <dialog class="print-dialog" id="print-dialog" aria-labelledby="print-dialog-title">

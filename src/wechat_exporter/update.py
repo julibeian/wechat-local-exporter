@@ -101,10 +101,18 @@ class Release:
     def asset(self, kind: str) -> Asset | None:
         if kind not in {"installer", "portable", "checksum"}:
             raise ValueError("未知更新类型")
-        name = (f"SHA256SUMS-v{self.version}.txt" if kind == "checksum" else
-                f"WeChat-TXT-PDF-Exporter-{'Installer-' if kind == 'installer' else ''}v{self.version}.exe")
-        matches = [a for a in self.assets if a.name == name]
-        return matches[0] if len(matches) == 1 else None
+        if kind == "checksum":
+            names = [f"SHA256SUMS-v{self.version}.txt"]
+        else:
+            suffix = f"{'Installer-' if kind == 'installer' else ''}v{self.version}.exe"
+            names = [f"WeChat-Local-Exporter-{suffix}", f"WeChat-TXT-PDF-Exporter-{suffix}"]
+        # Prefer the current public name, with a fallback for historical releases.
+        # Duplicate entries for the preferred name must fail closed.
+        for name in names:
+            matches = [a for a in self.assets if a.name == name]
+            if matches:
+                return matches[0] if len(matches) == 1 else None
+        return None
 
 
 class UpdateSource(Protocol):
