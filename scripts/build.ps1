@@ -58,6 +58,8 @@ if ($LASTEXITCODE -ne 0) { throw "Packaged updater smoke test failed." }
 & $Python "scripts\verify_packaged_update.py" $portable --kind executable
 if ($LASTEXITCODE -ne 0) { throw "Packaged executable updater smoke test failed." }
 
+& (Join-Path $PSScriptRoot "build_cli.ps1") -Python $Python -SkipTests
+
 $iscc = @(
     "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
     "$env:ProgramFiles\Inno Setup 6\ISCC.exe",

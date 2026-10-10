@@ -1,4 +1,4 @@
-"""Render the one-installer GitHub release page for one exact tag."""
+"""Render the installer and optional CLI downloads for one exact release tag."""
 
 from __future__ import annotations
 
@@ -44,12 +44,22 @@ def render_release_notes(
     if not re.fullmatch(r"[a-fA-F0-9]{64}", installed_exe_sha256, flags=re.ASCII):
         raise ValueError("Expected the SHA-256 of the installed executable")
     download_url = f"{RELEASES_URL}/download/{tag}/{installer}"
+    cli = f"WeChat-Local-Exporter-CLI-Windows-x64-{tag}.zip"
     return "\n".join([
         "## 下载",
         "",
         f"**[下载 {tag} 一键安装包]({download_url})**",
         "",
         "Windows 10/11 x64，无需安装 Python。",
+        *(["", "> v1.3 及更早版本升级时，请手动安装一次 v1.6.1。"] if tag == "v1.6.1" else []),
+        *([
+            "",
+            f"**[下载 {tag} CLI 免安装包（Agent / 批量导出）]({RELEASES_URL}/download/{tag}/{cli})**",
+            "",
+            "解压后在终端运行 `wechat-exporter.exe`，支持 JSON 任务批量导出；首次连接仍需完成微信登录。",
+            "",
+            "[CLI 命令与任务文件说明](https://github.com/julibeian/wechat-local-exporter/blob/main/docs/agent-cli.md)",
+        ] if cli in available else []),
         *([
             "",
             "**本次重点：离线 HTML 阅读 · 全文搜索与筛选 · 图文表情还原 · 打印 / 另存 PDF。**",
@@ -63,8 +73,7 @@ def render_release_notes(
         "",
         sections[0],
         "",
-        RELEASE_DISCLOSURE.rstrip(),
-        "",
+        *([RELEASE_DISCLOSURE.rstrip(), ""] if tag != "v1.6.1" else []),
         f"<!-- wechat-exporter-target-sha256:{installed_exe_sha256.lower()} -->",
         "",
     ])

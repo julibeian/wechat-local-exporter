@@ -42,7 +42,6 @@ def test_second_instance_activates_primary_and_update_signal_is_distinct():
 
 
 def test_secondary_gui_launch_returns_before_creating_tk(monkeypatch):
-    monkeypatch.setattr(gui, "require_signature_integrity", lambda: None)
     monkeypatch.setattr(gui, "claim_primary_instance", lambda: None)
     monkeypatch.setattr(
         gui.tk,
@@ -68,7 +67,6 @@ def test_primary_gui_always_releases_instance_coordinator(monkeypatch):
             raise RuntimeError("test mainloop failure")
 
     coordinator = Coordinator()
-    monkeypatch.setattr(gui, "require_signature_integrity", lambda: None)
     monkeypatch.setattr(gui, "claim_primary_instance", lambda: coordinator)
     monkeypatch.setattr(gui, "_enable_windows_high_dpi", lambda: None)
     monkeypatch.setattr(gui, "_configure_native_fonts", lambda _root: None)

@@ -21,7 +21,6 @@ from . import __version__
 from .archive import CalibrationSample
 from .history import ExportHistoryEntry, append_export_history, load_export_history
 from .instance_control import claim_primary_instance
-from .integrity import require_signature_integrity
 from .config import LocalConfig
 from .connection import ConnectionManager
 from .errors import user_message
@@ -3152,14 +3151,6 @@ def _date_range_timestamps(
 
 
 def main() -> None:
-    try:
-        require_signature_integrity()
-    except RuntimeError as error:
-        root = tk.Tk()
-        root.withdraw()
-        messagebox.showerror("软件完整性校验失败", str(error), parent=root)
-        root.destroy()
-        return
     coordinator = claim_primary_instance()
     if coordinator is None:
         return

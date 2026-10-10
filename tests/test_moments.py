@@ -331,7 +331,7 @@ def test_publish_directory_retries_a_transient_access_error(
 
 def test_isaac64_xor_roundtrip() -> None:
     """ISAAC-64 CDN decryption round-trips a JPEG with the fixed algorithm."""
-    key = "7400016519024241812"
+    key = "123456789"
     plain = _jpeg_bytes((16, 16))
     stream = _isaac64_keystream(key, len(plain))
     assert stream is not None
@@ -343,13 +343,13 @@ def test_isaac64_xor_roundtrip() -> None:
 
 
 def test_isaac64_keystream_fixed_vector() -> None:
-    stream = _isaac64_keystream("7400016519024241812", 64)
+    stream = _isaac64_keystream("123456789", 64)
     assert stream is not None
     assert stream.hex() == (
-        "d11f5124938a6ef489102d6f92e1e820"
-        "563e87b6f8a84aef78ca759c91a7e543"
-        "a20a5ff048379652b36bdb3c0e08c949"
-        "45ae63fcf9b02e451cb02307cebded25"
+        "9c87e6946a410182aee08a5a116f7cb98"
+        "6f10740dd490b9a330cd31db53ddc4ab7"
+        "c372731d687043c11035c5e3f7141001fd"
+        "43bf6035029496f725dae4bbcbc9"
     )
 
 
@@ -362,7 +362,7 @@ def test_isaac64_xor_rejects_non_image_output() -> None:
 def test_parser_keeps_live_photo_video_and_global_key() -> None:
     xml = """
     <SnsDataItem><id>live-1</id><username>wxid_friend</username>
-      <createTime>1787800000</createTime><enc key="2136343393" />
+      <createTime>1787800000</createTime><enc key="123456789" />
       <ContentObject><mediaList><media><type>2</type>
         <url md5="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" key="9988">https://shmmsns.qpic.cn/still/150</url>
         <thumb>https://shmmsns.qpic.cn/still/thumb</thumb>
@@ -376,7 +376,7 @@ def test_parser_keeps_live_photo_video_and_global_key() -> None:
     assert moment.media[0].kind == "image"
     assert moment.media[1].kind == "video"
     assert moment.media[1].role == "live_photo_video"
-    assert moment.media[1].aes_key == "2136343393"
+    assert moment.media[1].aes_key == "123456789"
     assert moment.media[1].token == "video-token"
     assert moment.media[1].enc_idx == "3"
 
@@ -399,7 +399,7 @@ def test_parser_labels_private_and_group_visibility_without_filtering() -> None:
 
 
 def test_video_decrypts_only_128k_prefix_and_preserves_tail(tmp_path) -> None:
-    key = "2136343393"
+    key = "123456789"
     plain = (
         b"\x00\x00\x00\x18ftypisom" + b"\x00" * (140 * 1024)
     )

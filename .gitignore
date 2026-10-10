@@ -12,5 +12,14 @@ dist/
 *.spec
 !packaging/WeChat-TXT-PDF-Exporter.spec
 !packaging/WeChat-Local-Exporter.spec
+!packaging/WeChat-Local-Exporter-CLI.spec
 /tmp/
 /output/
+
+/AGENTS.md
+/.codex/
+/design-*.md
+/项目演进总结.md
+/docs/*-development.md
+/docs/*-qa.md
+/docs/*-20*.md

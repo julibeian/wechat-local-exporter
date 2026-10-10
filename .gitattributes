@@ -6,3 +6,17 @@
 *.yaml text eol=lf
 *.ps1 text eol=crlf
 *.iss text eol=crlf
+
+/AGENTS.md export-ignore
+/.codex export-ignore
+/tmp export-ignore
+/outputs export-ignore
+/output export-ignore
+/build export-ignore
+/dist export-ignore
+/.venv export-ignore
+/.env* export-ignore
+/design-*.md export-ignore
+/docs/*-development.md export-ignore
+/docs/*-qa.md export-ignore
+/docs/*-20*.md export-ignore

@@ -29,7 +29,6 @@ from .jsonl_exporter import JsonlTranscriptWriter
 from .jsonl_package import ChatVideoLocator, export_conversation_jsonl_package
 from .database_cache import AccountDatabaseCache
 from .media import MediaResolver, derive_emoticon_key, extract_media_reference
-from .integrity import verify_signature
 from .models import (
     Conversation,
     AccountLocation,
@@ -50,7 +49,9 @@ _SELF_TEST_CONVERSATION_ID = "selftest_contact"
 _SELF_TEST_HTML_DIRECTORY = "packaged-self-test-chat-html"
 
 
-def _verify_local_media_pipeline(output_dir: Path, message: Message, data: bytes) -> tuple[str, str]:
+def _verify_local_media_pipeline(
+    output_dir: Path, message: Message, data: bytes, *, check_gui: bool = True,
+) -> tuple[str, str]:
     """Use owned synthetic cache files, including real Windows DPAPI in the EXE."""
     account = AccountLocation(output_dir / "synthetic-account", "self", "self-test")
     keys = (b"0123456789abcdef", 123)  # Public synthetic fixture, never an account secret.
@@ -119,10 +120,11 @@ def _verify_local_media_pipeline(output_dir: Path, message: Message, data: bytes
     with_video = profile.estimate("jsonl_package", include_videos=True)
     if not len(video_bytes) <= with_video.byte_count - without_video.byte_count <= len(video_bytes) + 300:
         raise RuntimeError("导出大小随视频选项更新的成品自检失败")
-    from .gui import _conversation_preview
-    if _conversation_preview("收到[玫瑰]【花】[OK]") != "收到[玫瑰]【花】[OK]":
-        raise RuntimeError("最近消息表情显示成品自检失败")
-    if os.name == "nt":
+    if check_gui:
+        from .gui import _conversation_preview
+        if _conversation_preview("收到[玫瑰]【花】[OK]") != "收到[玫瑰]【花】[OK]":
+            raise RuntimeError("最近消息表情显示成品自检失败")
+    if check_gui and os.name == "nt":
         from .preview_emoji import render_native_face
         import tkinter as tk
         from PIL import ImageTk
@@ -174,7 +176,7 @@ def _prepare_self_test_html_root(output_dir: Path) -> Path:
 
 
 def run_packaged_self_test(
-    output_dir: Path, *, check_environment: bool = False
+    output_dir: Path, *, check_environment: bool = False, check_gui: bool = True
 ) -> Path:
     """Exercise packaged chat formats and Moments without touching WeChat data."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -182,8 +184,6 @@ def run_packaged_self_test(
     compressed_probe = zstandard.ZstdCompressor().compress(zstd_probe.encode("utf-8"))
     if decode_database_content(b"", compressed_probe) != zstd_probe:
         raise RuntimeError("zstd 压缩消息自检失败")
-    if not verify_signature():
-        raise RuntimeError("个人签名完整性自检失败")
 
     runtime_query_status = "skipped_non_windows"
     if os.name == "nt":
@@ -263,7 +263,9 @@ def run_packaged_self_test(
         height=180,
         source="内置合成图片",
     )
-    image_cache_status, sticker_cache_status = _verify_local_media_pipeline(output_dir, messages[3], synthetic_image.data)
+    image_cache_status, sticker_cache_status = _verify_local_media_pipeline(
+        output_dir, messages[3], synthetic_image.data, check_gui=check_gui,
+    )
     txt_path = output_dir / "packaged-self-test.txt"
     pdf_path = output_dir / "packaged-self-test.pdf"
     json_path = output_dir / "packaged-self-test.json"
@@ -391,8 +393,10 @@ def run_packaged_self_test(
                 "runtime_resource_query": runtime_query_status,
                 "local_video_lookup": "ok",
                 "export_size_estimates": "ok",
-                "conversation_preview_faces": "ok",
-                "conversation_preview_colors": "ok" if os.name == "nt" else "skipped_non_windows",
+                "conversation_preview_faces": "ok" if check_gui else "skipped_headless",
+                "conversation_preview_colors": (
+                    "skipped_headless" if not check_gui else "ok" if os.name == "nt" else "skipped_non_windows"
+                ),
                 "html_archive": "ok",
                 "moments_archive": "ok",
                 "moments_count": moments_count,

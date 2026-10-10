@@ -26,6 +26,9 @@ jobs:
       - name: Run tests
         run: python -m pytest
 
+      - name: Audit public source archive
+        run: python scripts/verify_release_source.py --ref HEAD
+
       - name: Build application executable
         run: python -m PyInstaller --noconfirm --clean packaging/WeChat-Local-Exporter.spec
 
@@ -47,6 +50,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/verify_packaged_update.py "dist/WeChat-Local-Exporter-v$version.exe" --kind executable
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build and verify Agent CLI download
+        shell: pwsh
+        run: ./scripts/build_cli.ps1 -Python (Get-Command python).Source -SkipTests
 
       - name: Install Inno Setup
         run: choco install innosetup --yes --no-progress
@@ -111,9 +118,12 @@ jobs:
           $installedHash = (Get-FileHash -LiteralPath $installedExe -Algorithm SHA256).Hash.ToLowerInvariant()
           $installerHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
           $installerSize = (Get-Item -LiteralPath $installer).Length
-          $releaseFiles = @($installer) + @(Get-ChildItem -LiteralPath dist/update-assets -File | ForEach-Object { $_.FullName })
+          $cliZip = "dist/cli-assets/WeChat-Local-Exporter-CLI-Windows-x64-v$version.zip"
+          $cliChecksum = "$cliZip.sha256"
+          if (-not (Test-Path -LiteralPath $cliZip) -or -not (Test-Path -LiteralPath $cliChecksum)) { throw 'Verified CLI download assets are missing' }
+          $releaseFiles = @($installer, $cliZip, $cliChecksum) + @(Get-ChildItem -LiteralPath dist/update-assets -File | ForEach-Object { $_.FullName })
           $notesFile = Join-Path $env:RUNNER_TEMP "release-notes-$tag.md"
-          python scripts/render_release_notes.py --tag $tag --output $notesFile --installed-exe-sha256 $installedHash
+          python scripts/render_release_notes.py --tag $tag --output $notesFile --installed-exe-sha256 $installedHash --asset (Split-Path $installer -Leaf) --asset (Split-Path $cliZip -Leaf)
           if ($LASTEXITCODE -ne 0) { throw 'Release notes generation failed' }
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {

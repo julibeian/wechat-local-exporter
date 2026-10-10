@@ -27,6 +27,7 @@ dev = [
 
 [project.scripts]
 wechat-exporter = "wechat_exporter.cli:main"
+wechat-exporter-cli = "wechat_exporter.agent_cli:main"
 wechat-exporter-gui = "wechat_exporter.gui:main"
 
 [tool.setuptools]

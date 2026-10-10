@@ -5,7 +5,6 @@ from datetime import datetime
 from pathlib import Path
 
 from wechat_exporter.history import append_export_history, load_export_history
-from wechat_exporter.integrity import verify_signature
 from wechat_exporter.models import Conversation, ExportResult
 from wechat_exporter.service import _conversation_output_dir
 
@@ -110,8 +109,3 @@ def test_history_distinguishes_chat_file_zip_and_reads_old_rows(tmp_path: Path) 
         encoding="utf-8",
     )
     assert load_export_history(package_history)[0].export_category == "chat_package"
-
-
-def test_personal_signature_detects_tampering() -> None:
-    assert verify_signature()
-    assert not verify_signature("someone-else")

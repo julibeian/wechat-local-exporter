@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "jobs": [
+    {
+      "task": "export",
+      "all": true,
+      "type": "group",
+      "format": "json",
+      "since": "2026-10-01",
+      "until": "2026-10-10",
+      "output": "./exports/group-text"
+    },
+    {
+      "task": "package",
+      "query": "示例项目组",
+      "include_videos": false,
+      "output": "./exports/ai-packages"
+    }
+  ]
+}

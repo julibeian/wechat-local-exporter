@@ -170,6 +170,37 @@ def claim_primary_instance(
     return WindowsInstanceCoordinator.claim(namespace)
 
 
+class HeadlessInstanceLease:
+    """Reserve the GUI's mutex without activating a window on contention."""
+
+    def __init__(self, kernel, handle: int):
+        self._kernel = kernel
+        self._handle = handle
+
+    def close(self) -> None:
+        if self._handle:
+            self._kernel.CloseHandle(self._handle)
+            self._handle = 0
+
+
+def claim_headless_instance(
+    namespace: str = INSTANCE_NAMESPACE,
+) -> HeadlessInstanceLease | NoopInstanceCoordinator | None:
+    """Serialize GUI/CLI cache and export lifetimes across local processes."""
+    if os.name != "nt":
+        return NoopInstanceCoordinator()
+    kernel = _configured_kernel32()
+    ctypes.set_last_error(0)
+    handle = int(kernel.CreateMutexW(None, False, _object_names(namespace)[0]) or 0)
+    error = ctypes.get_last_error()
+    if not handle:
+        raise ctypes.WinError(error)
+    if error == _ERROR_ALREADY_EXISTS:
+        kernel.CloseHandle(handle)
+        return None
+    return HeadlessInstanceLease(kernel, handle)
+
+
 def signal_named_event(name: str) -> bool:
     """Signal an existing coordinator event without creating a false primary."""
     if os.name != "nt":
