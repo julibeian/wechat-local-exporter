@@ -400,6 +400,7 @@ class UpdateController:
                 operation, value = self.events.get_nowait()
                 if operation == "checked":
                     self.active = False
+                    self._target_version = ""
                     if self.download is not None and self.download.version != self.manager.result.latest_version:
                         self.download = None
                     self.refresh()

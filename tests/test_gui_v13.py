@@ -655,6 +655,20 @@ def test_stale_download_cannot_install_an_old_version(app, tmp_path, monkeypatch
     assert not staged and not stopped
 
 
+def test_rechecking_updates_replaces_the_previous_download_target(app, tmp_path, monkeypatch):
+    controller, _, _, _, _ = prepare_quick_update(app, tmp_path, monkeypatch)
+    controller._target_version = "1.7.0"
+    controller.download = DownloadedUpdate(tmp_path / "old.exe", "b" * 64, "b" * 64, "1.7.0", "installer")
+    controller.show()
+    controller.manager.result = CheckResult("available", "1.8.0", (Release("1.8.0", "", "最新说明"),))
+    controller.active = True
+    controller.events.put(("checked", controller.manager.result))
+    controller._poll()
+    assert controller.download is None
+    assert controller.download_button.cget("text") == "更新至 v1.8.0"
+    assert controller.update_button.cget("text") == "更新至 v1.8.0"
+
+
 def test_quick_update_click_downloads_then_hands_off_without_extra_confirmation(app, tmp_path, monkeypatch):
     controller, downloads, staged, stopped, plan_path = prepare_quick_update(app, tmp_path, monkeypatch)
     controller.busy = lambda: False
