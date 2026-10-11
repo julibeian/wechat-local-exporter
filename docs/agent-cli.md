@@ -1,4 +1,4 @@
-# 微信导出 CLI：供 Agent 和脚本调用
+# wechatexporter CLI：供 Agent 和脚本调用
 
 这是图形版之外的免安装入口，使用相同的微信连接、账号校验、数据库缓存和导出引擎。支持 Windows 10/11 x64、微信 4.x，无需安装 Python。聊天数据输出到指定的本机目录。
 
@@ -6,7 +6,7 @@ CLI 不打开导出界面。第一次连接仍需本人完成微信登录；已�
 
 ## 下载与启动
 
-在本项目 GitHub Releases 中选择 `WeChat-Local-Exporter-CLI-Windows-x64-v<版本>.zip`，解压后运行 `wechat-exporter.exe`。安装包供日常点击操作，CLI ZIP 供 Agent、终端和自动化任务使用。
+在本项目 GitHub Releases 中选择 `命令行_wechatexporterCLI_v<版本>.zip`，解压后运行 `wechatexporter.exe`。安装包供日常点击操作，CLI ZIP 供 Agent、终端和自动化任务使用。
 
 Agent 可通过 GitHub API 选择最新包含 CLI 的正式版本并自动下载：
 
@@ -14,39 +14,38 @@ Agent 可通过 GitHub API 选择最新包含 CLI 的正式版本并自动下载
 $releases = Invoke-RestMethod 'https://api.github.com/repos/julibeian/wechat-local-exporter/releases?per_page=30'
 $release = $releases | Where-Object {
     -not $_.draft -and -not $_.prerelease -and
-    @($_.assets | Where-Object { $_.name -match '^WeChat-Local-Exporter-CLI-Windows-x64-v[0-9.]+\.zip$' }).Count -eq 1
+    @($_.assets | Where-Object { $_.name -match '^命令行_wechatexporterCLI_v[0-9.]+\.zip$' }).Count -eq 1
 } | Select-Object -First 1
 if (-not $release) { throw '尚无已发布的 CLI 包；请使用本地开发构建。' }
-$asset = $release.assets | Where-Object { $_.name -match '^WeChat-Local-Exporter-CLI-Windows-x64-v[0-9.]+\.zip$' }
-$checksum = $release.assets | Where-Object { $_.name -eq "$($asset.name).sha256" }
-if (-not $checksum) { throw 'CLI 校验文件缺失。' }
+$asset = $release.assets | Where-Object { $_.name -match '^命令行_wechatexporterCLI_v[0-9.]+\.zip$' }
+$digest = [regex]::Match($asset.digest, '^sha256:([a-fA-F0-9]{64})$')
+if (-not $digest.Success) { throw 'CLI 包的 SHA-256 校验码缺失。' }
+$expected = $digest.Groups[1].Value
 $targetDir = Join-Path $PWD 'wechat-cli'
 New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
 $zipPath = Join-Path $targetDir $asset.name
 Invoke-WebRequest $asset.browser_download_url -OutFile $zipPath
-Invoke-WebRequest $checksum.browser_download_url -OutFile "$zipPath.sha256"
-$expected = ((Get-Content -LiteralPath "$zipPath.sha256" -Raw).Trim() -split '\s+')[0]
 if ((Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash -ne $expected) { throw 'CLI 包校验失败。' }
 Expand-Archive -LiteralPath $zipPath -DestinationPath (Join-Path $targetDir 'bin') -Force
-& (Join-Path $targetDir 'bin/wechat-exporter.exe') version
+& (Join-Path $targetDir 'bin/wechatexporter.exe') version
 ```
 
-ZIP 内含运行程序、本文、任务示例、许可说明及文件校验清单；旁边的 `.zip.sha256` 用于校验整个包。
+ZIP 内含运行程序、本文、任务示例、许可说明及文件校验清单。下载页附件旁的 SHA-256 可直接复制，用于校验整个包；Agent 可读取 GitHub API 的 `digest` 字段。
 
 ## Agent 最短调用流程
 
 ```powershell
-.\wechat-exporter.exe version
-.\wechat-exporter.exe schema
-.\wechat-exporter.exe diagnose
-.\wechat-exporter.exe conversations --query '示例项目组' --quiet
-.\wechat-exporter.exe export --query '示例项目组' --format json --output '.\exports' --quiet
+.\wechatexporter.exe version
+.\wechatexporter.exe schema
+.\wechatexporter.exe diagnose
+.\wechatexporter.exe conversations --query '示例项目组' --quiet
+.\wechatexporter.exe export --query '示例项目组' --format json --output '.\exports' --quiet
 ```
 
 首次无法连接时，会返回退出码 `3` 和 `CONNECTION_REQUIRED` / `LOGIN_REQUIRED`。只有本人明确允许重启微信时才执行：
 
 ```powershell
-.\wechat-exporter.exe connect --allow-restart
+.\wechatexporter.exe connect --allow-restart
 ```
 
 该命令可能退出并启动微信以获取密钥，需要本人在微信完成登录；后续导出无需逐次点击软件。默认命令不会主动重启微信。微信未运行时，连接器可使用上次已确认账号的有效本机缓存，并刷新变化的本机数据库。
@@ -56,10 +55,10 @@ ZIP 内含运行程序、本文、任务示例、许可说明及文件校验清�
 `conversations` 返回 `id`、`name`、`type`、`last_timestamp`，不返回聊天正文。`accounts` 列出本机数据目录的账号 ID。建议 Agent 先列出会话，再用返回的稳定 ID 调用；重名的联系人也能区分。
 
 ```powershell
-.\wechat-exporter.exe export --conversation 'wxid_example' --conversation '12345@chatroom' --format json --output '.\exports'
-.\wechat-exporter.exe export --all --type group --since '2026-10-01' --until '2026-10-10' --format txt --output '.\exports'
-.\wechat-exporter.exe export --query '项目组' --format html --output '.\archives'
-.\wechat-exporter.exe export --all --type contact --output '.\exports' --dry-run
+.\wechatexporter.exe export --conversation 'wxid_example' --conversation '12345@chatroom' --format json --output '.\exports'
+.\wechatexporter.exe export --all --type group --since '2026-10-01' --until '2026-10-10' --format txt --output '.\exports'
+.\wechatexporter.exe export --query '项目组' --format html --output '.\archives'
+.\wechatexporter.exe export --all --type contact --output '.\exports' --dry-run
 ```
 
 - `--conversation` 只接受精确 ID，可重复；`--query` 按名称或 ID 包含匹配，导出全部匹配会话；`--all` 需要显式给出。三个选择方式互斥。
@@ -78,9 +77,9 @@ ZIP 内含运行程序、本文、任务示例、许可说明及文件校验清�
 | `moments` | 联系人 / 本人本机可见朋友圈的 HTML + JSON + 媒体归档。`--self` 选择本人，不支持群聊或日期筛选；当前朋友圈引擎可能下载朋友圈媒体。 |
 
 ```powershell
-.\wechat-exporter.exe package --all --type group --include-videos --max-file-mb 100 --output '.\ai-data'
-.\wechat-exporter.exe files --query '项目组' --category pdf --category word --output '.\files'
-.\wechat-exporter.exe moments --self --output '.\moments'
+.\wechatexporter.exe package --all --type group --include-videos --max-file-mb 100 --output '.\ai-data'
+.\wechatexporter.exe files --query '项目组' --category pdf --category word --output '.\files'
+.\wechatexporter.exe moments --self --output '.\moments'
 ```
 
 聊天 HTML 和 AI 资料包默认只处理本机资源；显式加 `--allow-network-media` 后才尝试补全缺失资源。CLI 与图形版使用相同的导出历史。重复运行会生成新的可用文件名，保留已有归档；当前不提供跨次运行的增量消息导出或断点续传。
@@ -88,8 +87,8 @@ ZIP 内含运行程序、本文、任务示例、许可说明及文件校验清�
 ## 一次连接批量执行多组任务
 
 ```powershell
-.\wechat-exporter.exe batch --job '.\example-job.json' --dry-run --quiet
-.\wechat-exporter.exe batch --job '.\example-job.json' --quiet > '.\result.json'
+.\wechatexporter.exe batch --job '.\example-job.json' --dry-run --quiet
+.\wechatexporter.exe batch --job '.\example-job.json' --quiet > '.\result.json'
 ```
 
 任务文件使用 UTF-8 JSON，兼容 UTF-8 BOM。相对输出目录基于**任务文件所在目录**。版本必须为 `1`，任务最多 1000 组、文件最多 2 MB。例如：

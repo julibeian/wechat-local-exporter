@@ -11,6 +11,7 @@ import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "render_release_notes.py"
 render_release_notes = runpy.run_path(str(SCRIPT))["render_release_notes"]
+refresh_release_verification = runpy.run_path(str(SCRIPT))["refresh_release_verification"]
 INSTALLED_HASH = "a" * 64
 
 
@@ -68,15 +69,24 @@ def test_existing_release_links_only_to_the_installer():
     assert f"target-sha256:{INSTALLED_HASH}" in body
 
 
-def test_release_workflow_prepares_and_verifies_all_update_resources():
+def test_release_workflow_keeps_only_user_downloads_and_preserves_edited_notes():
     workflow = (SCRIPT.parents[1] / ".github" / "workflows" / "release.yml").read_text(
         encoding="utf-8"
     )
     assert "gh release upload $tag @releaseFiles --clobber" in workflow
     assert "gh release create $tag @releaseFiles" in workflow
-    assert "build_update_assets.py" in workflow and "--fetch-previous" in workflow
+    assert "$releaseFiles = @($installer, $cliZip)" in workflow
+    assert "--existing-body" in workflow
+    assert "build_update_assets.py" not in workflow
     assert "Published update asset does not match the verified local file" in workflow
     assert "SHA256SUMS" not in workflow
+
+
+def test_existing_release_text_and_line_endings_survive_checksum_refresh():
+    body = "## 下载\r\n\r\n自行修改的正文。\r\n\r\n<!-- wechat-exporter-target-sha256:" + "b" * 64 + " -->\r\n"
+    expected = body.replace("b" * 64, INSTALLED_HASH)
+    assert refresh_release_verification(body, INSTALLED_HASH) == expected
+    assert "CLI" not in refresh_release_verification(body, INSTALLED_HASH)
 
 
 @pytest.mark.parametrize(

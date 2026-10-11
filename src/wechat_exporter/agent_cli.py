@@ -52,7 +52,7 @@ def _positive(value: str) -> int:
 
 def build_parser() -> JsonArgumentParser:
     parser = JsonArgumentParser(
-        prog="wechat-exporter", description="本机微信批量导出 CLI；结果为 UTF-8 JSON，进度写入 stderr。",
+        prog="wechatexporter", description="本机微信批量导出 CLI；结果为 UTF-8 JSON，进度写入 stderr。",
     )
     parser.add_argument("--version", action="version", version=__version__)
     commands = parser.add_subparsers(dest="command", required=True)

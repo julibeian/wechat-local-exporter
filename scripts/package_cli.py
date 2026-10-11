@@ -18,9 +18,9 @@ def package_cli(executable: Path, version: str, output_dir: Path) -> Path:
     if not executable.is_file():
         raise FileNotFoundError(executable)
     output_dir.mkdir(parents=True, exist_ok=True)
-    destination = output_dir / f"WeChat-Local-Exporter-CLI-Windows-x64-v{version}.zip"
+    destination = output_dir / f"命令行_wechatexporterCLI_v{version}.zip"
     sources = {
-        "wechat-exporter.exe": executable,
+        "wechatexporter.exe": executable,
         "README.md": ROOT / "docs" / "agent-cli.md",
         "example-job.json": ROOT / "docs" / "agent-cli-example.json",
         "LICENSE": ROOT / "LICENSE",
@@ -34,9 +34,6 @@ def package_cli(executable: Path, version: str, output_dir: Path) -> Path:
                 digest = hashlib.file_digest(stream, "sha256").hexdigest()
             checksums.append(f"{digest}  {name}")
         archive.writestr("SHA256SUMS.txt", "\n".join(checksums) + "\n")
-    with destination.open("rb") as stream:
-        digest = hashlib.file_digest(stream, "sha256").hexdigest()
-    destination.with_suffix(".zip.sha256").write_text(f"{digest}  {destination.name}\n", encoding="utf-8")
     return destination
 
 

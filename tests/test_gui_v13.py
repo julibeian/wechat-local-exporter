@@ -603,14 +603,56 @@ def test_update_icon_appears_after_github_and_survives_banner_dismissal(app, mon
     controller.manager.result = CheckResult("available", "1.7.0")
     controller.refresh()
     assert controller.update_button.winfo_manager() == "pack"
+    assert controller.update_dot.winfo_manager() == "pack"
+    assert str(controller.update_dot.cget("foreground")) == "#d93025"
     packed = controller.github_link.master.pack_slaves()
     assert packed.index(controller.update_button) > packed.index(controller.github_link)
+    assert packed.index(controller.update_dot) > packed.index(controller.update_button)
     controller.dismiss()
     assert controller.banner.winfo_manager() == ""
     assert controller.update_button.winfo_manager() == "pack"
     controller.manager.result = CheckResult("latest", "1.6.1")
     controller.refresh()
     assert controller.update_button.winfo_manager() == ""
+    assert controller.update_dot.winfo_manager() == ""
+
+
+def test_browsing_history_keeps_latest_update_target_and_red_dot(app, tmp_path, monkeypatch):
+    controller, downloads, staged, stopped, _ = prepare_quick_update(app, tmp_path, monkeypatch)
+    controller.manager.result = CheckResult("available", "1.7.0", (
+        Release("1.7.0", "", "新版说明"), Release("1.6.0", "", "历史说明"),
+    ))
+    controller.busy = lambda: True
+    controller.show()
+    controller.release_list.selection_clear(0, "end")
+    controller.release_list.selection_set(1)
+    controller._release_selected()
+    assert controller.release_heading.get() == "v1.6.0"
+    assert controller.download_button.cget("text") == "更新至 v1.7.0"
+    assert controller.dialog_state.get() == "可更新至 v1.7.0"
+    assert controller.dialog_update_dot.winfo_manager() == "pack"
+    assert str(controller.dialog_update_dot.cget("foreground")) == "#d93025"
+    controller.download_button.invoke()
+    controller.events.put(("progress", (12 * 1024**2, 76 * 1024**2)))
+    controller._poll()
+    assert downloads == [("1.7.0", "installer")]
+    assert "v1.7.0" in controller.download_status.get()
+    assert not staged and not stopped
+    controller.manager.result = CheckResult("latest", "1.6.1")
+    controller.refresh()
+    assert controller.dialog_update_dot.winfo_manager() == ""
+    assert controller.download_button.instate(["disabled"])
+
+
+def test_stale_download_cannot_install_an_old_version(app, tmp_path, monkeypatch):
+    controller, downloads, staged, stopped, _ = prepare_quick_update(app, tmp_path, monkeypatch)
+    controller.busy = lambda: True
+    controller.download = DownloadedUpdate(tmp_path / "old.exe", "b" * 64, "b" * 64, "1.6.0", "executable")
+    controller.start_download()
+    controller._poll()
+    assert downloads == [("1.7.0", "installer")]
+    assert controller.download.version == "1.7.0"
+    assert not staged and not stopped
 
 
 def test_quick_update_click_downloads_then_hands_off_without_extra_confirmation(app, tmp_path, monkeypatch):

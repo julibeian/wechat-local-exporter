@@ -3,7 +3,7 @@ requires = ["setuptools>=75", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "wechat-local-exporter"
+name = "wechatexporter"
 version = "1.6.1"
 description = "Local-first Windows WeChat 4.x chat and Moments archive exporter"
 readme = "README.md"
@@ -26,6 +26,8 @@ dev = [
 ]
 
 [project.scripts]
+wechatexporter = "wechat_exporter.agent_cli:main"
+wce = "wechat_exporter.agent_cli:main"
 wechat-exporter = "wechat_exporter.cli:main"
 wechat-exporter-cli = "wechat_exporter.agent_cli:main"
 wechat-exporter-gui = "wechat_exporter.gui:main"

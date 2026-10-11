@@ -12,6 +12,8 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    env:
+      PYTHONIOENCODING: utf-8
     steps:
       - uses: actions/checkout@v4
 
@@ -70,13 +72,6 @@ jobs:
           if (-not $iscc) { throw 'Inno Setup compiler not found' }
           & $iscc "/DAppVersion=$version" packaging/installer.iss
 
-      - name: Prepare verified full and delta update assets
-        shell: pwsh
-        run: |
-          $version = (Select-String -Path pyproject.toml -Pattern '^version = "(.+)"$').Matches.Groups[1].Value
-          python scripts/build_update_assets.py --executable "dist/WeChat-Local-Exporter-v$version.exe" --version $version --output-dir dist/update-assets --fetch-previous
-          if ($LASTEXITCODE -ne 0) { throw 'Update asset preparation failed' }
-
       - name: Verify one-click installer
         shell: pwsh
         run: |
@@ -118,25 +113,49 @@ jobs:
           $installedHash = (Get-FileHash -LiteralPath $installedExe -Algorithm SHA256).Hash.ToLowerInvariant()
           $installerHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
           $installerSize = (Get-Item -LiteralPath $installer).Length
-          $cliZip = "dist/cli-assets/WeChat-Local-Exporter-CLI-Windows-x64-v$version.zip"
-          $cliChecksum = "$cliZip.sha256"
-          if (-not (Test-Path -LiteralPath $cliZip) -or -not (Test-Path -LiteralPath $cliChecksum)) { throw 'Verified CLI download assets are missing' }
-          $releaseFiles = @($installer, $cliZip, $cliChecksum) + @(Get-ChildItem -LiteralPath dist/update-assets -File | ForEach-Object { $_.FullName })
+          $cliZip = "dist/cli-assets/命令行_wechatexporterCLI_v$version.zip"
+          if (-not (Test-Path -LiteralPath $cliZip)) { throw 'Verified CLI download asset is missing' }
+          $releaseFiles = @($installer, $cliZip)
           $notesFile = Join-Path $env:RUNNER_TEMP "release-notes-$tag.md"
-          python scripts/render_release_notes.py --tag $tag --output $notesFile --installed-exe-sha256 $installedHash --asset (Split-Path $installer -Leaf) --asset (Split-Path $cliZip -Leaf)
-          if ($LASTEXITCODE -ne 0) { throw 'Release notes generation failed' }
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {
             gh release upload $tag @releaseFiles --clobber
             if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed' }
-            gh release edit $tag --title "$tag" --notes-file $notesFile --latest
+            $existing = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$tag" | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { throw 'Existing release could not be read' }
+            $existingBody = Join-Path $env:RUNNER_TEMP "existing-body-$tag.md"
+            [System.IO.File]::WriteAllText($existingBody, $existing.body, [System.Text.UTF8Encoding]::new($false))
+            python scripts/render_release_notes.py --tag $tag --output $notesFile --existing-body $existingBody --installed-exe-sha256 $installedHash
+            if ($LASTEXITCODE -ne 0) { throw 'Edited release verification could not be refreshed' }
+            gh release edit $tag --notes-file $notesFile --latest
           } else {
+            python scripts/render_release_notes.py --tag $tag --output $notesFile --installed-exe-sha256 $installedHash --asset (Split-Path $installer -Leaf) --asset (Split-Path $cliZip -Leaf)
+            if ($LASTEXITCODE -ne 0) { throw 'Release notes generation failed' }
             gh release create $tag @releaseFiles --verify-tag --title "$tag" --notes-file $notesFile --latest
           }
           if ($LASTEXITCODE -ne 0) { throw 'GitHub release publication failed' }
           $published = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$tag" | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw 'Published release could not be verified' }
           $assets = @($published.assets)
+          $obsoleteNames = @(
+            "WeChat-Local-Exporter-CLI-Windows-x64-v$version.zip",
+            "WeChat-Local-Exporter-CLI-Windows-x64-v$version.zip.sha256",
+            "WeChat-Local-Exporter-CLI-v$version.zip",
+            "WeChat-Local-Exporter-CLI-v$version.zip.sha256",
+            "命令行-WeChat-Local-Exporter-CLI-v$version.zip",
+            "命令行-WeChat-Local-Exporter-CLI-v$version.zip.sha256",
+            "WeChat-Local-Exporter-Update-v$version.exe"
+          )
+          foreach ($asset in $assets) {
+            if ($asset.name -in $obsoleteNames -or $asset.name -like "WeChat-Local-Exporter-Delta-*-to-v$version-*.zip") {
+              gh release delete-asset $tag $asset.name --yes
+              if ($LASTEXITCODE -ne 0) { throw 'Obsolete release attachment could not be removed' }
+            }
+          }
+          $publishedInstaller = @($assets | Where-Object { $_.name -eq (Split-Path $installer -Leaf) })
+          # Keep the legacy download URL for v1.6.0's exact-name updater.
+          gh api --method PATCH "repos/$env:GITHUB_REPOSITORY/releases/assets/$($publishedInstaller[0].id)" -f "label=wechatexporter_v$version.exe" *> $null
+          if ($LASTEXITCODE -ne 0) { throw 'Windows installer label could not be updated' }
           foreach ($file in $releaseFiles) {
             $name = Split-Path $file -Leaf
             $matches = @($assets | Where-Object { $_.name -eq $name })

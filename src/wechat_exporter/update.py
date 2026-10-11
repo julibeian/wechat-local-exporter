@@ -361,7 +361,7 @@ class CheckResult:
     @property
     def text(self) -> str:
         if self.status == "available":
-            return f"● 新版本 v{self.latest_version}"
+            return f"可更新至 v{self.latest_version}"
         if self.status == "latest":
             return "✓ 已是最新版本"
         return "暂时无法检查更新"

@@ -17,6 +17,21 @@ RELEASE_DISCLOSURE = """## 使用前
 """
 
 
+def refresh_release_verification(body: str, installed_exe_sha256: str) -> str:
+    """Refresh machine verification without rewriting the author's release text."""
+    if not re.fullmatch(r"[a-fA-F0-9]{64}", installed_exe_sha256, flags=re.ASCII):
+        raise ValueError("Expected the SHA-256 of the installed executable")
+    marker = f"<!-- wechat-exporter-target-sha256:{installed_exe_sha256.lower()} -->"
+    pattern = r"<!--\s*wechat-exporter-target-sha256:[a-fA-F0-9]{64}\s*-->"
+    matches = list(re.finditer(pattern, body))
+    if len(matches) > 1 or ("wechat-exporter-target-sha256" in body and not matches):
+        raise ValueError("Existing release verification is malformed")
+    if matches:
+        return re.sub(pattern, marker, body)
+    newline = "\r\n" if "\r\n" in body else "\n"
+    return body + newline * (1 if body.endswith(newline) else 2) + marker + newline
+
+
 def render_release_notes(
     notes: str,
     tag: str,
@@ -44,7 +59,12 @@ def render_release_notes(
     if not re.fullmatch(r"[a-fA-F0-9]{64}", installed_exe_sha256, flags=re.ASCII):
         raise ValueError("Expected the SHA-256 of the installed executable")
     download_url = f"{RELEASES_URL}/download/{tag}/{installer}"
-    cli = f"WeChat-Local-Exporter-CLI-Windows-x64-{tag}.zip"
+    cli = next((name for name in (
+        f"命令行_wechatexporterCLI_{tag}.zip",
+        f"命令行-WeChat-Local-Exporter-CLI-{tag}.zip",
+        f"WeChat-Local-Exporter-CLI-{tag}.zip",
+        f"WeChat-Local-Exporter-CLI-Windows-x64-{tag}.zip",
+    ) if name in available), "")
     return "\n".join([
         "## 下载",
         "",
@@ -56,7 +76,7 @@ def render_release_notes(
             "",
             f"**[下载 {tag} CLI 免安装包（Agent / 批量导出）]({RELEASES_URL}/download/{tag}/{cli})**",
             "",
-            "解压后在终端运行 `wechat-exporter.exe`，支持 JSON 任务批量导出；首次连接仍需完成微信登录。",
+            "解压后在终端运行 `wechatexporter.exe`，支持 JSON 任务批量导出；首次连接仍需完成微信登录。",
             "",
             "[CLI 命令与任务文件说明](https://github.com/julibeian/wechat-local-exporter/blob/main/docs/agent-cli.md)",
         ] if cli in available else []),
@@ -84,6 +104,7 @@ def main() -> None:
     parser.add_argument("--tag", required=True, help="Release tag, supplied by GITHUB_REF_NAME")
     parser.add_argument("--notes", type=Path, default=Path("RELEASE_NOTES.md"))
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--existing-body", type=Path, help="Preserve an edited release and refresh only its hidden checksum")
     parser.add_argument("--asset", action="append", help="Existing asset name; repeat for each asset")
     parser.add_argument(
         "--installed-exe-sha256",
@@ -92,15 +113,20 @@ def main() -> None:
     )
     args = parser.parse_args()
     try:
-        body = render_release_notes(
-            args.notes.read_text(encoding="utf-8-sig"),
-            args.tag,
-            args.asset,
-            installed_exe_sha256=args.installed_exe_sha256,
-        )
+        if args.existing_body:
+            with args.existing_body.open(encoding="utf-8-sig", newline="") as stream:
+                body = refresh_release_verification(stream.read(), args.installed_exe_sha256)
+        else:
+            body = render_release_notes(
+                args.notes.read_text(encoding="utf-8-sig"),
+                args.tag,
+                args.asset,
+                installed_exe_sha256=args.installed_exe_sha256,
+            )
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
-    args.output.write_text(body, encoding="utf-8", newline="\n")
+    with args.output.open("w", encoding="utf-8", newline="") as stream:
+        stream.write(body)
 
 
 if __name__ == "__main__":
