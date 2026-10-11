@@ -15,7 +15,7 @@ def test_download_contains_stable_exe_job_docs_and_matching_checksums(tmp_path):
     executable = tmp_path / "console.exe"
     executable.write_bytes(b"synthetic console payload")
     package = package_cli(executable, "1.6.1", tmp_path / "assets")
-    assert package.name == "命令行_wechatexporterCLI_v1.6.1.zip"
+    assert package.name == "wechatexporterCLI_v1.6.1.zip"
     with zipfile.ZipFile(package) as archive:
         assert {"wechatexporter.exe", "README.md", "example-job.json", "LICENSE", "THIRD_PARTY_NOTICES.md", "SHA256SUMS.txt"} == set(archive.namelist())
         for line in archive.read("SHA256SUMS.txt").decode().splitlines():
@@ -26,7 +26,7 @@ def test_download_contains_stable_exe_job_docs_and_matching_checksums(tmp_path):
 
 def test_cli_download_link_is_only_rendered_for_a_real_asset():
     installer = "WeChat-TXT-PDF-Exporter-Installer-v1.6.1.exe"
-    cli = "命令行_wechatexporterCLI_v1.6.1.zip"
+    cli = "wechatexporterCLI_v1.6.1.zip"
     body = render_release_notes("# v1.6.1\n\nNew CLI download.\n", "v1.6.1",
         [installer, cli], installed_exe_sha256="a" * 64)
     assert body.count("/releases/download/") == 2
@@ -39,7 +39,7 @@ def test_cli_download_link_is_only_rendered_for_a_real_asset():
 
 def test_gui_updater_does_not_treat_cli_download_as_a_gui_update():
     from wechat_exporter.update import Asset, Release
-    cli = Asset("命令行_wechatexporterCLI_v1.6.1.zip", "https://example.invalid/cli", 1)
+    cli = Asset("wechatexporterCLI_v1.6.1.zip", "https://example.invalid/cli", 1)
     release = Release("1.6.1", "", "", (cli,))
     assert release.asset("installer") is None
     assert release.asset("portable") is None

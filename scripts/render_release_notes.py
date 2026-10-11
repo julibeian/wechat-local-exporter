@@ -60,6 +60,7 @@ def render_release_notes(
         raise ValueError("Expected the SHA-256 of the installed executable")
     download_url = f"{RELEASES_URL}/download/{tag}/{installer}"
     cli = next((name for name in (
+        f"wechatexporterCLI_{tag}.zip",
         f"命令行_wechatexporterCLI_{tag}.zip",
         f"命令行-WeChat-Local-Exporter-CLI-{tag}.zip",
         f"WeChat-Local-Exporter-CLI-{tag}.zip",

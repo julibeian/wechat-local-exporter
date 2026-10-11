@@ -6,7 +6,7 @@ CLI 不打开导出界面。第一次连接仍需本人完成微信登录；已�
 
 ## 下载与启动
 
-在本项目 GitHub Releases 中选择 `命令行_wechatexporterCLI_v<版本>.zip`，解压后运行 `wechatexporter.exe`。安装包供日常点击操作，CLI ZIP 供 Agent、终端和自动化任务使用。
+在本项目 GitHub Releases 中选择 `wechatexporterCLI_v<版本>.zip`（标有“命令行”），解压后运行 `wechatexporter.exe`。安装包供日常点击操作，CLI ZIP 供 Agent、终端和自动化任务使用。
 
 Agent 可通过 GitHub API 选择最新包含 CLI 的正式版本并自动下载：
 
@@ -14,10 +14,10 @@ Agent 可通过 GitHub API 选择最新包含 CLI 的正式版本并自动下载
 $releases = Invoke-RestMethod 'https://api.github.com/repos/julibeian/wechat-local-exporter/releases?per_page=30'
 $release = $releases | Where-Object {
     -not $_.draft -and -not $_.prerelease -and
-    @($_.assets | Where-Object { $_.name -match '^命令行_wechatexporterCLI_v[0-9.]+\.zip$' }).Count -eq 1
+    @($_.assets | Where-Object { $_.name -match '^wechatexporterCLI_v[0-9.]+\.zip$' }).Count -eq 1
 } | Select-Object -First 1
 if (-not $release) { throw '尚无已发布的 CLI 包；请使用本地开发构建。' }
-$asset = $release.assets | Where-Object { $_.name -match '^命令行_wechatexporterCLI_v[0-9.]+\.zip$' }
+$asset = $release.assets | Where-Object { $_.name -match '^wechatexporterCLI_v[0-9.]+\.zip$' }
 $digest = [regex]::Match($asset.digest, '^sha256:([a-fA-F0-9]{64})$')
 if (-not $digest.Success) { throw 'CLI 包的 SHA-256 校验码缺失。' }
 $expected = $digest.Groups[1].Value

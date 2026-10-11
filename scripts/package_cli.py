@@ -18,7 +18,7 @@ def package_cli(executable: Path, version: str, output_dir: Path) -> Path:
     if not executable.is_file():
         raise FileNotFoundError(executable)
     output_dir.mkdir(parents=True, exist_ok=True)
-    destination = output_dir / f"命令行_wechatexporterCLI_v{version}.zip"
+    destination = output_dir / f"wechatexporterCLI_v{version}.zip"
     sources = {
         "wechatexporter.exe": executable,
         "README.md": ROOT / "docs" / "agent-cli.md",

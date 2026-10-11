@@ -113,7 +113,7 @@ jobs:
           $installedHash = (Get-FileHash -LiteralPath $installedExe -Algorithm SHA256).Hash.ToLowerInvariant()
           $installerHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
           $installerSize = (Get-Item -LiteralPath $installer).Length
-          $cliZip = "dist/cli-assets/命令行_wechatexporterCLI_v$version.zip"
+          $cliZip = "dist/cli-assets/wechatexporterCLI_v$version.zip"
           if (-not (Test-Path -LiteralPath $cliZip)) { throw 'Verified CLI download asset is missing' }
           $releaseFiles = @($installer, $cliZip)
           $notesFile = Join-Path $env:RUNNER_TEMP "release-notes-$tag.md"
@@ -144,6 +144,7 @@ jobs:
             "WeChat-Local-Exporter-CLI-v$version.zip.sha256",
             "命令行-WeChat-Local-Exporter-CLI-v$version.zip",
             "命令行-WeChat-Local-Exporter-CLI-v$version.zip.sha256",
+            "_wechatexporterCLI_v$version.zip",
             "WeChat-Local-Exporter-Update-v$version.exe"
           )
           foreach ($asset in $assets) {
@@ -156,6 +157,9 @@ jobs:
           # Keep the legacy download URL for v1.6.0's exact-name updater.
           gh api --method PATCH "repos/$env:GITHUB_REPOSITORY/releases/assets/$($publishedInstaller[0].id)" -f "label=wechatexporter_v$version.exe" *> $null
           if ($LASTEXITCODE -ne 0) { throw 'Windows installer label could not be updated' }
+          $publishedCli = @($assets | Where-Object { $_.name -eq (Split-Path $cliZip -Leaf) })
+          gh api --method PATCH "repos/$env:GITHUB_REPOSITORY/releases/assets/$($publishedCli[0].id)" -f "label=命令行_wechatexporterCLI_v$version.zip" *> $null
+          if ($LASTEXITCODE -ne 0) { throw 'CLI label could not be updated' }
           foreach ($file in $releaseFiles) {
             $name = Split-Path $file -Leaf
             $matches = @($assets | Where-Object { $_.name -eq $name })
