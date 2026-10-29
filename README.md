@@ -1,10 +1,12 @@
 # 微信聊天本地导出工具
 
-把本机微信聊天和朋友圈导出为可搜索的离线 HTML，也支持 JSON、TXT、PDF 和带媒体的 JSONL 资料包。聊天内容在本机处理。
+把**聊天**和**朋友圈**导出为可搜索的离线 HTML，及 JSON、TXT、PDF 和带媒体的 JSONL 资料包。
+
+需在**本机**处理。
 
 >后续将依据反馈问题维护更新
 
-**[点击此处跳转下载](https://github.com/julibeian/wechat-local-exporter/releases)**  ·  [反馈问题](https://github.com/julibeian/wechat-local-exporter/issues)
+**[点击此处跳转下载](https://github.com/julibeian/wechat-local-exporter/releases)** 
 
 ## 下载
 
